@@ -10,8 +10,8 @@
 #
 # What this does:
 #   1. Installs kernel6.12-devel (avoids kernel-headers conflict)
-#   2. Downloads & installs NVIDIA Tesla driver 525.147.05
-#      (certified for CUDA 12.x, supports T4)
+#   2. Downloads & installs NVIDIA Tesla driver 565.57.01
+#      (supports kernel 6.5+, certified for CUDA 12.7, supports T4)
 #   3. Verifies GPU with nvidia-smi
 #   4. Restarts Docker so nvidia-container-toolkit picks up the driver
 #   5. Disables Docker BuildKit (standalone docker-compose compatibility)
@@ -19,7 +19,7 @@
 
 set -e
 
-DRIVER_VER="525.147.05"
+DRIVER_VER="565.57.01"
 KVER=$(uname -r)
 
 echo "======================================================"
