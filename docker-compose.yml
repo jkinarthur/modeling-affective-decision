@@ -1,12 +1,21 @@
 # ============================================================
 # AD-DAN  –  docker-compose.yml
 #
-# Usage (local GPU machine or AWS EC2 with Docker):
-#   docker compose run --rm addan build          # build TAD-Bench 10K
-#   docker compose run --rm addan train-sft      # SFT stage
-#   docker compose run --rm addan train-rl       # PPO RL stage
-#   docker compose run --rm addan evaluate       # evaluate best model
-#   docker compose run --rm addan smoke          # quick smoke-test (CPU-only)
+# Compatible with: Deep Learning AMI Neuron (Amazon Linux 2023)
+#                  g4dn.xlarge (NVIDIA T4), standalone docker-compose
+#
+# One-time host setup (installs NVIDIA drivers):
+#   bash setup.sh
+#
+# Build image:
+#   sudo DOCKER_BUILDKIT=0 docker-compose build
+#
+# Run pipeline:
+#   sudo docker-compose run --rm addan build          # build TAD-Bench 10K
+#   sudo docker-compose run --rm addan train-sft      # SFT stage
+#   sudo docker-compose run --rm addan train-rl       # PPO RL stage
+#   sudo docker-compose run --rm addan evaluate       # evaluate best model
+#   sudo docker-compose run --rm addan smoke          # quick smoke-test (CPU-only)
 #
 # Environment overrides (pass with -e or a .env file):
 #   TOTAL_N=10000       dataset size
@@ -17,6 +26,8 @@
 #   PPO_EPOCHS=5        PPO inner epochs
 # ============================================================
 
+version: "3.8"
+
 services:
   addan:
     build:
@@ -24,14 +35,10 @@ services:
       dockerfile: Dockerfile
     image: addan:latest
 
-    # ---- GPU access (requires nvidia-container-toolkit) ----------
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # ---- GPU access via nvidia-container-runtime -----------------
+    # Requires: bash setup.sh  (installs NVIDIA driver + configures runtime)
+    # nvidia-ctk runtime configure --runtime=docker registers "nvidia" runtime
+    runtime: nvidia
 
     # ---- persistent volumes --------------------------------------
     volumes:
@@ -44,6 +51,10 @@ services:
 
     # ---- environment defaults (override via .env or -e flag) -----
     environment:
+      # GPU exposure
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Training params
       - TOTAL_N=${TOTAL_N:-10000}
       - MAX_EPOCHS=${MAX_EPOCHS:-20}
       - BATCH_SIZE=${BATCH_SIZE:-32}
@@ -56,7 +67,7 @@ services:
 
     # ---- named commands ------------------------------------------
     # Override the default CMD by passing a service profile name
-    # via: docker compose run --rm addan <command>
+    # via: sudo docker-compose run --rm addan <command>
     entrypoint: >
       /bin/bash -c "
         case \"$$1\" in
