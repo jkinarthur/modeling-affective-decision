@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from transformers import BartTokenizer
+from transformers import AutoTokenizer, BartTokenizer
 
 sys.path.insert(0, os.path.dirname(__file__))
 from src.models.ad_dan import ADDAN, ADDANConfig
@@ -37,6 +37,9 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Evaluate AD-DAN")
     p.add_argument("--ckpt",          type=str, required=True,
                    help="Path to checkpoint directory (contains model.pt or actor.pt)")
+    p.add_argument("--encoder_model", type=str, default="microsoft/deberta-v3-base")
+    p.add_argument("--emotion_model", type=str,
+                   default="j-hartmann/emotion-english-distilroberta-base")
     p.add_argument("--bart_model",    type=str, default="facebook/bart-base")
     p.add_argument("--num_emotions",  type=int, default=32)
     p.add_argument("--tau",           type=float, default=0.5)
@@ -90,6 +93,8 @@ def run_evaluation(
             user_attention_mask=batch["user_attention_mask"],
             response_input_ids=batch["response_input_ids"],
             response_attention_mask=batch["response_attention_mask"],
+            emotion_input_ids=batch.get("emotion_input_ids"),
+            emotion_attention_mask=batch.get("emotion_attention_mask"),
         )
 
         s_aff  = out["S_aff"].cpu().numpy()
@@ -107,11 +112,13 @@ def run_evaluation(
         all_dec_preds.extend((s_dec > 0.5).astype(int).tolist())
         all_dec_lbls.extend(d_lbl.tolist())
 
-        # Optional generation for BLEU/ROUGE
-        if do_generate:
+        # Optional generation for BLEU/ROUGE (only when BART is loaded)
+        if do_generate and model.seq2seq is not None:
+            bart_ctx_ids  = batch.get("bart_context_input_ids",  batch["context_input_ids"])
+            bart_ctx_mask = batch.get("bart_context_attention_mask", batch["context_attention_mask"])
             gen_ids = model.generate(
-                context_input_ids=batch["context_input_ids"],
-                context_attention_mask=batch["context_attention_mask"],
+                context_input_ids=bart_ctx_ids,
+                context_attention_mask=bart_ctx_mask,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
                 num_beams=4,
@@ -129,7 +136,7 @@ def run_evaluation(
                 "S_aff":     float(s_aff[i]),
                 "S_dec":     float(s_dec[i]),
                 "ADI_hat":   float(adi_h[i]),
-                "ADI_flag":  int(max(0.0, s_aff[i] - s_dec[i]) > 0.5),
+                "ADI_flag":  int(max(0.0, s_aff[i] - s_dec[i]) > tau),
                 "emotion_pred": int(e_pred[i]),
                 "emotion_true": int(e_lbl[i]),
                 "dec_pred":  int(s_dec[i] > 0.5),
@@ -145,7 +152,7 @@ def run_evaluation(
 
     # Core metrics
     metrics = {
-        "ADIR (%)":  adir(s_aff_arr, s_dec_arr, tau=0.5),
+        "ADIR (%)":  adir(s_aff_arr, s_dec_arr, tau=tau),
         "ADIS":      adis(s_aff_arr, s_dec_arr),
         "EmotAcc (%)": float(np.mean(e_arr == e_lbl_arr) * 100.0),
         "DecAcc (%)":  float(np.mean(d_arr == d_lbl_arr) * 100.0),
@@ -153,7 +160,7 @@ def run_evaluation(
 
     # Bootstrap 95% CI for ADIR
     def _adir_fn(preds, lbls):
-        return adir(preds, lbls, tau=0.5)
+        return adir(preds, lbls, tau=tau)
 
     ci_lo, ci_hi = bootstrap_ci(
         _adir_fn,
@@ -175,7 +182,9 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    tokenizer = BartTokenizer.from_pretrained(args.bart_model)
+    tokenizer = AutoTokenizer.from_pretrained(args.encoder_model)
+    emotion_tokenizer = AutoTokenizer.from_pretrained(args.emotion_model)
+    bart_tokenizer = BartTokenizer.from_pretrained(args.bart_model)
 
     # ---- Data --------------------------------------------------------
     if args.synthetic:
@@ -191,6 +200,8 @@ def main() -> None:
             test_samples=test_s,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
+            emotion_tokenizer=emotion_tokenizer,
+            bart_tokenizer=bart_tokenizer,
         )
     elif args.data_dir:
         train_s, val_s, test_s = load_tad_splits(args.data_dir)
@@ -201,19 +212,30 @@ def main() -> None:
             test_samples=test_s,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
+            emotion_tokenizer=emotion_tokenizer,
+            bart_tokenizer=bart_tokenizer,
         )
     else:
         raise ValueError("Provide --data_dir or --synthetic")
 
     # ---- Model -------------------------------------------------------
-    cfg   = ADDANConfig(bart_model_name=args.bart_model, num_emotions=args.num_emotions)
+    ckpt_dir = Path(args.ckpt)
+    is_rl_ckpt = (ckpt_dir / "actor.pt").exists()
+    cfg   = ADDANConfig(
+        encoder_model_name=args.encoder_model,
+        emotion_model_name=args.emotion_model,
+        bart_model_name=args.bart_model,
+        num_emotions=args.num_emotions,
+        gradient_checkpointing=False,          # no training — save load time
+        load_generation_model=is_rl_ckpt,      # only load BART if evaluating RL ckpt
+    )
     model = ADDAN(cfg).to(device)
 
     # Try actor.pt (RL stage) then model.pt (SFT)
     ckpt_dir = Path(args.ckpt)
     ckpt_file = ckpt_dir / "actor.pt" if (ckpt_dir / "actor.pt").exists() \
                 else ckpt_dir / "model.pt"
-    model.load_state_dict(torch.load(ckpt_file, map_location=device))
+    model.load_state_dict(torch.load(ckpt_file, map_location=device), strict=False)
     print(f"Loaded checkpoint: {ckpt_file}")
 
     # ---- Evaluate ----------------------------------------------------

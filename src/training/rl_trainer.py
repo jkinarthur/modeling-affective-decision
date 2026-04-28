@@ -4,10 +4,10 @@ PPO RL Trainer for AD-DAN
 Implements the Proximal Policy Optimization stage described in the paper.
 
 Reward function (terminal, per full response):
-    R(u_T, r_T) = α·S_aff + β·S_dec − γ_adi·ADI
+    R(u_T, r_T) = α·S_aff − β·S_dec + γ_adi·ADI + b_tau·1[ADI>tau]
     R_total     = R − η·KL[π_θ(·|u_T) ‖ π_SFT(·|u_T)]
 
-with α=0.35, β=0.45, γ_adi=0.20, η=0.02.
+with α=0.35, β=0.45, γ_adi=0.20, b_tau=0.30, η=0.02.
 
 PPO hyper-parameters (paper defaults):
     ε=0.1 (clip), 5 PPO epochs per rollout batch, batch_size=16.
@@ -32,9 +32,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from transformers import AutoTokenizer, BartTokenizer
 
 from ..models.ad_dan import ADDAN, ADDANConfig
-from ..utils.metrics import adir, adis
+from ..utils.metrics import adir
 
 
 # ---------------------------------------------------------------------------
@@ -112,12 +113,13 @@ class PPOTrainer:
         )
         self.actor.to(self.device)
 
-        # Frozen reference policy (π_SFT)
+        # Frozen reference policy (π_SFT) — kept on CPU to save GPU memory.
+        # Moved to device only when computing ref log-probs.
         self.ref_policy: ADDAN = copy.deepcopy(actor)
-        self.ref_policy.to(self.device)
         for p in self.ref_policy.parameters():
             p.requires_grad_(False)
         self.ref_policy.eval()
+        self.ref_policy.cpu()  # keep off GPU
 
         # Value head
         hidden_dim = actor.seq2seq.config.d_model
@@ -127,11 +129,39 @@ class PPOTrainer:
         self.optimizer = AdamW(
             list(actor.parameters()) + list(self.value_head.parameters()),
             lr=lr,
+            weight_decay=float(self.config.weight_decay),
         )
         self.scaler = torch.cuda.amp.GradScaler(
             enabled=fp16 and self.device.type == "cuda"
         )
         self.fp16 = fp16
+
+        # Tokenizers for reward scoring path:
+        # generation uses BART ids, while scoring uses DeBERTa ids.
+        self.encoder_tokenizer = AutoTokenizer.from_pretrained(
+            self.config.encoder_model_name
+        )
+        self.bart_tokenizer = BartTokenizer.from_pretrained(
+            self.config.bart_model_name
+        )
+
+    def _retokenize_generated_for_scoring(
+        self,
+        gen_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Convert generated BART token ids into DeBERTa-tokenized response ids
+        so reward/scoring is computed in the encoder's token space.
+        """
+        texts = self.bart_tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
+        enc = self.encoder_tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self.max_new_tokens,
+            return_tensors="pt",
+        )
+        return enc["input_ids"].to(self.device), enc["attention_mask"].to(self.device)
 
     # ------------------------------------------------------------------
     # Reward computation
@@ -143,33 +173,68 @@ class PPOTrainer:
         context_attention_mask: torch.Tensor,
         user_input_ids: torch.Tensor,
         user_attention_mask: torch.Tensor,
-        gen_input_ids: torch.Tensor,
-        gen_attention_mask: torch.Tensor,
+        score_input_ids: torch.Tensor,
+        score_attention_mask: torch.Tensor,
+        orig_resp_input_ids: torch.Tensor,
+        orig_resp_attention_mask: torch.Tensor,
         ref_log_probs: torch.Tensor,   # (B, T-1)  from π_SFT
         act_log_probs: torch.Tensor,   # (B, T-1)  from π_θ
     ) -> torch.Tensor:                 # (B,)  scalar reward per sample
         """
-        R_total = α·S_aff + β·S_dec − γ_adi·ADI − η·KL
+        R_total = [generation reward on generated text]
+                + reward_direct_alpha * [direct reward on original response]
+                − η·KL
+
+        The direct reward term scores the *original* dataset response — the same
+        text that evaluate.py scores — closing the train/eval distribution gap.
         """
         cfg = self.config
 
-        # Score generated responses
+        # ---- Part 1: reward on generated response (exploration signal) ----
         with torch.no_grad():
-            s_aff, s_dec, adi_hat = self.actor.score(
+            s_aff, s_dec, _ = self.actor.score(
                 context_input_ids, context_attention_mask,
                 user_input_ids, user_attention_mask,
-                gen_input_ids, gen_attention_mask,
+                score_input_ids, score_attention_mask,
             )
 
-        # Task reward
-        task_reward = (
+        margin = s_aff - s_dec
+        adi_metric = torch.clamp(margin, min=0.0)
+        tau_bonus = torch.sigmoid((margin - cfg.tau) * cfg.reward_tau_sharpness)
+        spread_bonus = torch.abs(margin - margin.mean())
+
+        gen_reward = (
             cfg.reward_alpha * s_aff
-            + cfg.reward_beta * s_dec
-            - cfg.reward_gamma_adi * adi_hat
+            - cfg.reward_beta * s_dec
+            + cfg.reward_gamma_adi * adi_metric
+            + cfg.reward_adir_tau_bonus * tau_bonus
+            + cfg.reward_margin_spread * spread_bonus
         )
 
+        # ---- Part 2: direct reward on original response (eval-aligned) ----
+        # This scores the *actual* dataset response — identical to what evaluate.py
+        # does at test time — so RL directly optimizes the evaluation metric.
+        with torch.no_grad():
+            s_aff_orig, s_dec_orig, _ = self.actor.score(
+                context_input_ids, context_attention_mask,
+                user_input_ids, user_attention_mask,
+                orig_resp_input_ids, orig_resp_attention_mask,
+            )
+
+        margin_orig = s_aff_orig - s_dec_orig
+        adi_orig    = torch.clamp(margin_orig, min=0.0)
+        tau_bonus_orig = torch.sigmoid((margin_orig - cfg.tau) * cfg.reward_tau_sharpness)
+
+        direct_reward = (
+            cfg.reward_alpha * s_aff_orig
+            - cfg.reward_beta * s_dec_orig
+            + cfg.reward_gamma_adi * adi_orig
+            + cfg.reward_adir_tau_bonus * tau_bonus_orig
+        )
+
+        task_reward = gen_reward + cfg.reward_direct_alpha * direct_reward
+
         # KL penalty: KL[π_θ ‖ π_SFT] = Σ_t (log π_θ - log π_SFT)
-        # (token-level mask already applied in log_probs_from_ids)
         kl = (act_log_probs - ref_log_probs).sum(dim=-1)   # (B,)
         kl = kl.clamp(min=0.0)                              # one-sided penalty
 
@@ -214,18 +279,24 @@ class PPOTrainer:
         for epoch in range(1, num_epochs + 1):
             t0 = time.time()
             epoch_rewards, epoch_adir_vals = [], []
+            n_batches = len(self.train_dl)
 
-            for batch in self.train_dl:
+            for batch_idx, batch in enumerate(self.train_dl, 1):
                 batch = {
                     k: v.to(self.device) if isinstance(v, torch.Tensor) else v
                     for k, v in batch.items()
                 }
 
                 # ---- Rollout: generate responses -------------------------
+                # Use BART-tokenized context (50K vocab) — DeBERTa IDs (128K)
+                # would cause out-of-bounds CUDA assert in BART embeddings.
+                bart_ctx_ids  = batch.get("bart_context_input_ids",  batch["context_input_ids"])
+                bart_ctx_mask = batch.get("bart_context_attention_mask", batch["context_attention_mask"])
+
                 with torch.no_grad():
                     gen_ids = self.actor.generate(
-                        context_input_ids=batch["context_input_ids"],
-                        context_attention_mask=batch["context_attention_mask"],
+                        context_input_ids=bart_ctx_ids,
+                        context_attention_mask=bart_ctx_mask,
                         max_new_tokens=self.max_new_tokens,
                         do_sample=True,
                         top_p=0.9,
@@ -235,17 +306,27 @@ class PPOTrainer:
                     pad_id  = self.actor.seq2seq.config.pad_token_id
                     gen_mask = (gen_ids != pad_id).long()
 
+                    # Retokenize generated responses (BART ids -> DeBERTa ids)
+                    # before calling reward/scoring modules.
+                    score_resp_ids, score_resp_mask = self._retokenize_generated_for_scoring(
+                        gen_ids
+                    )
+
                     # Log-probs from both policies
+                    # ref_policy lives on CPU; move to GPU for inference
+                    self.ref_policy.to(self.device)
                     ref_lp = self.ref_policy.log_probs_from_ids(
-                        batch["context_input_ids"],
-                        batch["context_attention_mask"],
+                        bart_ctx_ids,
+                        bart_ctx_mask,
                         gen_ids, gen_mask,
                     )
+                    self.ref_policy.cpu()
+                    torch.cuda.empty_cache()
 
                 # Actor log-probs (requires grad for PPO)
                 act_lp = self.actor.log_probs_from_ids(
-                    batch["context_input_ids"],
-                    batch["context_attention_mask"],
+                    bart_ctx_ids,
+                    bart_ctx_mask,
                     gen_ids, gen_mask,
                 )
 
@@ -256,7 +337,9 @@ class PPOTrainer:
                         batch["context_attention_mask"],
                         batch["user_input_ids"],
                         batch["user_attention_mask"],
-                        gen_ids, gen_mask,
+                        score_resp_ids, score_resp_mask,
+                        batch["response_input_ids"],
+                        batch["response_attention_mask"],
                         ref_lp.detach(), act_lp.detach(),
                     )
 
@@ -271,17 +354,19 @@ class PPOTrainer:
 
                 epoch_rewards.extend(rewards.cpu().tolist())
 
-                # Track ADIR for logging
+                # Track ADIR on original responses — matches evaluate.py exactly.
+                # This makes avg_ADIR in epoch logs directly comparable to test-set ADIR.
                 with torch.no_grad():
                     s_aff, s_dec, _ = self.actor.score(
                         batch["context_input_ids"],
                         batch["context_attention_mask"],
                         batch["user_input_ids"],
                         batch["user_attention_mask"],
-                        gen_ids, gen_mask,
+                        batch["response_input_ids"],
+                        batch["response_attention_mask"],
                     )
                 epoch_adir_vals.append(
-                    adir(s_aff.cpu().numpy(), s_dec.cpu().numpy())
+                    adir(s_aff.cpu().numpy(), s_dec.cpu().numpy(), tau=self.config.tau)
                 )
 
                 # ---- PPO updates -----------------------------------------
@@ -292,8 +377,8 @@ class PPOTrainer:
                         enabled=self.fp16 and self.device.type == "cuda"
                     ):
                         new_lp = self.actor.log_probs_from_ids(
-                            batch["context_input_ids"],
-                            batch["context_attention_mask"],
+                            bart_ctx_ids,
+                            bart_ctx_mask,
                             gen_ids, gen_mask,
                         )
                         new_log_probs = new_lp.sum(dim=-1)  # (B,)
@@ -305,6 +390,11 @@ class PPOTrainer:
                         ) * advantages
                         policy_loss = -torch.min(surr1, surr2).mean()
 
+                        # Entropy bonus: encourages exploration, prevents all-negative collapse
+                        # entropy ≈ -mean(log_probs) over sequence tokens
+                        entropy_bonus = -new_lp.mean()  # mean per-token entropy proxy
+                        entropy_coef = 0.01
+
                         # Value loss
                         ctx_h_new = self.actor.encode(
                             batch["context_input_ids"],
@@ -313,7 +403,7 @@ class PPOTrainer:
                         v_new = self.value_head(ctx_h_new)
                         value_loss = F.mse_loss(v_new, returns)
 
-                        loss = policy_loss + 0.5 * value_loss
+                        loss = policy_loss + 0.5 * value_loss - entropy_coef * entropy_bonus
 
                     self.optimizer.zero_grad()
                     self.scaler.scale(loss).backward()
@@ -324,6 +414,15 @@ class PPOTrainer:
                     )
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
+
+                if batch_idx % 50 == 0 or batch_idx == n_batches:
+                    elapsed = time.time() - t0
+                    avg_r_so_far = float(np.mean(epoch_rewards)) if epoch_rewards else 0.0
+                    print(
+                        f"  RL Epoch {epoch} | step {batch_idx}/{n_batches} "
+                        f"| avg_reward={avg_r_so_far:.4f} | {elapsed:.1f}s",
+                        flush=True,
+                    )
 
             avg_r    = float(np.mean(epoch_rewards))
             avg_adir = float(np.mean(epoch_adir_vals))

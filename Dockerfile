@@ -31,6 +31,10 @@ ENV HF_HOME=/app/.cache/huggingface
 ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
 ENV TOKENIZERS_PARALLELISM=false
 
+# ---- entrypoint script ---------------------------------------------
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # ---- data / checkpoint directories ---------------------------------
 RUN mkdir -p /app/data /app/checkpoints
 

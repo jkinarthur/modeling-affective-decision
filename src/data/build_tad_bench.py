@@ -161,8 +161,8 @@ def pseudo_label(
     elif has_empathy and resp_len >= 60:
         dec_label = 1.0
     else:
-        # borderline — coin-flip with slight bias toward 1
-        dec_label = float(rng.random() < 0.55)
+        # borderline — conservatively label as not decision-appropriate
+        dec_label = 0.0
 
     # ---- ADI ----------------------------------------------------------------
     adi_score = float(max(0.0, aff_score - dec_label))

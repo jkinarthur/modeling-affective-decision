@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import os
 import random
+from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from transformers import BartTokenizer
 
 
@@ -71,23 +72,57 @@ class TADBenchDataset(Dataset):
 
     Parameters
     ----------
-    samples     : list of TADSample
-    tokenizer   : BartTokenizer
-    max_ctx_len : max tokens for context encoding
-    max_resp_len: max tokens for response encoding
+    samples          : list of TADSample
+    tokenizer        : main tokenizer (DeBERTa)
+    emotion_tokenizer: separate tokenizer for the emotion encoder (RoBERTa).
+                       Required because the emotion encoder (DistilRoBERTa) has
+                       a different vocabulary (~50K) from DeBERTa (~128K).
+    max_ctx_len      : max tokens for context encoding
+    max_resp_len     : max tokens for response encoding
     """
 
     def __init__(
         self,
         samples: list[TADSample],
-        tokenizer: BartTokenizer,
+        tokenizer,
+        emotion_tokenizer=None,
+        bart_tokenizer=None,
         max_ctx_len: int = 512,
         max_resp_len: int = 128,
+        augment: bool = False,
+        augment_prob: float = 0.5,
+        augment_word_dropout_prob: float = 0.12,
     ):
         self.samples = samples
         self.tokenizer = tokenizer
+        self.emotion_tokenizer = emotion_tokenizer
+        self.bart_tokenizer = bart_tokenizer
         self.max_ctx_len = max_ctx_len
         self.max_resp_len = max_resp_len
+        self.augment = augment
+        self.augment_prob = augment_prob
+        self.augment_word_dropout_prob = augment_word_dropout_prob
+
+    def _augment_context(self, text: str) -> str:
+        """Apply light token dropout to context text during training only."""
+        if not self.augment or random.random() > self.augment_prob:
+            return text
+
+        tokens = text.split()
+        if len(tokens) < 8:
+            return text
+
+        kept = [
+            tok for tok in tokens
+            if random.random() > self.augment_word_dropout_prob
+        ]
+
+        # Keep at least half the original tokens to avoid collapsing semantics.
+        min_keep = max(4, len(tokens) // 2)
+        if len(kept) < min_keep:
+            kept = tokens[:min_keep]
+
+        return " ".join(kept)
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -95,8 +130,10 @@ class TADBenchDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         s = self.samples[idx]
 
+        context_text = self._augment_context(s.context)
+
         ctx_enc = self.tokenizer(
-            s.context,
+            context_text,
             max_length=self.max_ctx_len,
             truncation=True,
             padding=False,
@@ -117,7 +154,7 @@ class TADBenchDataset(Dataset):
             return_tensors=None,
         )
 
-        return {
+        item = {
             "sample_id":              s.sample_id,
             "context_input_ids":      ctx_enc["input_ids"],
             "context_attention_mask": ctx_enc["attention_mask"],
@@ -131,6 +168,32 @@ class TADBenchDataset(Dataset):
             "adi_score":              s.adi_score,
         }
 
+        # Separately tokenize context for the emotion encoder (RoBERTa vocab)
+        if self.emotion_tokenizer is not None:
+            emo_enc = self.emotion_tokenizer(
+                context_text,
+                max_length=self.max_ctx_len,
+                truncation=True,
+                padding=False,
+                return_tensors=None,
+            )
+            item["emotion_input_ids"]      = emo_enc["input_ids"]
+            item["emotion_attention_mask"] = emo_enc["attention_mask"]
+
+        # Separately tokenize context for BART generation (50K vocab, incompatible with DeBERTa 128K)
+        if self.bart_tokenizer is not None:
+            bart_enc = self.bart_tokenizer(
+                context_text,
+                max_length=self.max_ctx_len,
+                truncation=True,
+                padding=False,
+                return_tensors=None,
+            )
+            item["bart_context_input_ids"]      = bart_enc["input_ids"]
+            item["bart_context_attention_mask"] = bart_enc["attention_mask"]
+
+        return item
+
 
 # ---------------------------------------------------------------------------
 # Collator
@@ -139,11 +202,12 @@ class TADBenchDataset(Dataset):
 class TADCollator:
     """
     Pads variable-length sequences in a batch.
-    Works with BartTokenizer (pad_token_id = 1).
+    Works with both DeBERTa and RoBERTa tokenizers.
     """
 
-    def __init__(self, pad_token_id: int = 1):
+    def __init__(self, pad_token_id: int = 1, emotion_pad_token_id: int = 1):
         self.pad = pad_token_id
+        self.emotion_pad = emotion_pad_token_id
 
     def _pad(
         self,
@@ -164,7 +228,7 @@ class TADCollator:
         user_ids, user_mask = self._pad([b["user_input_ids"]           for b in batch], self.pad)
         resp_ids, resp_mask = self._pad([b["response_input_ids"]       for b in batch], self.pad)
 
-        return {
+        out = {
             "sample_ids":               [b["sample_id"] for b in batch],
             "context_input_ids":        ctx_ids,
             "context_attention_mask":   ctx_mask,
@@ -177,6 +241,24 @@ class TADCollator:
             "dec_labels":       torch.tensor([b["dec_label"]     for b in batch], dtype=torch.float),
             "adi_labels":       torch.tensor([b["adi_score"]     for b in batch], dtype=torch.float),
         }
+
+        # Pad emotion encoder inputs if present (separate RoBERTa vocab)
+        if "emotion_input_ids" in batch[0]:
+            emo_ids, emo_mask = self._pad(
+                [b["emotion_input_ids"] for b in batch], self.emotion_pad
+            )
+            out["emotion_input_ids"]      = emo_ids
+            out["emotion_attention_mask"] = emo_mask
+
+        # Pad BART context inputs if present (separate BART vocab)
+        if "bart_context_input_ids" in batch[0]:
+            bart_ids, bart_mask = self._pad(
+                [b["bart_context_input_ids"] for b in batch], self.pad
+            )
+            out["bart_context_input_ids"]      = bart_ids
+            out["bart_context_attention_mask"] = bart_mask
+
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -272,23 +354,69 @@ def make_synthetic_samples(n: int = 200, seed: int = 42) -> list[TADSample]:
 
 
 def build_dataloaders(
-    tokenizer: BartTokenizer,
+    tokenizer,
     train_samples: list[TADSample],
     val_samples: list[TADSample],
     test_samples: list[TADSample],
     batch_size: int = 32,
     num_workers: int = 4,
+    use_weighted_sampler: bool = True,
+    emotion_tokenizer=None,
+    bart_tokenizer=None,
+    augment_train: bool = False,
+    augment_prob: float = 0.5,
+    augment_word_dropout_prob: float = 0.12,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
-    """Build train / val / test DataLoaders."""
-    collator = TADCollator(pad_token_id=tokenizer.pad_token_id)
+    """Build train / val / test DataLoaders.
 
-    train_ds = TADBenchDataset(train_samples, tokenizer)
-    val_ds   = TADBenchDataset(val_samples,   tokenizer)
-    test_ds  = TADBenchDataset(test_samples,  tokenizer)
+    When `use_weighted_sampler=True`, the training DataLoader uses a
+    WeightedRandomSampler to up-sample rare emotion classes, counteracting
+    the heavily imbalanced 32-class distribution in EmpatheticDialogues.
+
+    Pass `emotion_tokenizer` (a separate RoBERTa tokenizer) to produce
+    `emotion_input_ids` / `emotion_attention_mask` in each batch.
+
+    Pass `bart_tokenizer` (BART tokenizer, 50K vocab) to produce
+    `bart_context_input_ids` / `bart_context_attention_mask` needed by
+    the RL stage generate() and log_probs_from_ids() calls.
+    """
+    emo_pad = emotion_tokenizer.pad_token_id if emotion_tokenizer is not None else 1
+    collator = TADCollator(pad_token_id=tokenizer.pad_token_id,
+                           emotion_pad_token_id=emo_pad)
+
+    train_ds = TADBenchDataset(
+        train_samples,
+        tokenizer,
+        emotion_tokenizer,
+        bart_tokenizer,
+        augment=augment_train,
+        augment_prob=augment_prob,
+        augment_word_dropout_prob=augment_word_dropout_prob,
+    )
+    val_ds   = TADBenchDataset(val_samples,  tokenizer, emotion_tokenizer, bart_tokenizer)
+    test_ds  = TADBenchDataset(test_samples, tokenizer, emotion_tokenizer, bart_tokenizer)
+
+    # ----- Weighted sampler for training set --------------------------------
+    train_sampler = None
+    if use_weighted_sampler and len(train_samples) > 0:
+        emotion_labels = [s.emotion for s in train_samples]
+        class_counts = Counter(emotion_labels)
+        # Weight per sample = 1 / freq(class)
+        sample_weights = [1.0 / class_counts[e] for e in emotion_labels]
+        train_sampler = WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=len(sample_weights),
+            replacement=True,
+        )
 
     train_dl = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True,
-        collate_fn=collator, num_workers=num_workers, pin_memory=True,
+        train_ds,
+        batch_size=batch_size,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        collate_fn=collator,
+        num_workers=num_workers,
+        pin_memory=True,
     )
     val_dl = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False,
@@ -299,6 +427,34 @@ def build_dataloaders(
         collate_fn=collator, num_workers=num_workers, pin_memory=True,
     )
     return train_dl, val_dl, test_dl
+
+
+def compute_class_weights(
+    samples: list[TADSample],
+    num_emotions: int = 32,
+) -> tuple[torch.Tensor, float]:
+    """
+    Compute per-class emotion weights and BCE pos_weight from training samples.
+
+    Returns
+    -------
+    emotion_weights : (num_emotions,) tensor — inverse frequency weights for CE loss
+    dec_pos_weight  : float — neg_count / pos_count for binary BCE
+    """
+    emotion_counts = Counter(s.emotion for s in samples)
+    total = len(samples)
+    # Inverse frequency, normalized so mean weight = 1
+    weights = []
+    for i in range(num_emotions):
+        count = emotion_counts.get(i, 1)  # avoid division by zero
+        weights.append(total / (num_emotions * count))
+    emotion_weights = torch.tensor(weights, dtype=torch.float)
+
+    dec_pos  = sum(1 for s in samples if s.dec_label > 0.5)
+    dec_neg  = total - dec_pos
+    dec_pos_weight = dec_neg / max(dec_pos, 1)
+
+    return emotion_weights, dec_pos_weight
 
 
 # ---------------------------------------------------------------------------

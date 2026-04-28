@@ -32,7 +32,17 @@ from ..utils.metrics import adir, adis, emotion_accuracy, empathy_pearson
 
 class SFTTrainer:
     """
-    Supervised fine-tuning trainer for AD-DAN.
+    Supervised fine-tuning trainer for AD-DAN with staged training.
+
+    Training schedule
+    -----------------
+    Phase 1 (paa_pretrain_epochs): train PAA + encoder only (emotion + S_aff).
+    Phase 2 (dem_pretrain_epochs): train DEM + encoder only (S_dec).
+    Phase 3 (remaining epochs):   train all modules jointly with CMIA + ADI loss.
+    After freeze_emotion_encoder_epochs total epochs, the emotion encoder unfreezes.
+
+    Gradient accumulation simulates large effective batches on T4:
+      effective_batch = batch_size * grad_accum_steps  (default: 4*16=64)
 
     Parameters
     ----------
@@ -43,12 +53,15 @@ class SFTTrainer:
     config      : ADDANConfig (used for loss weights)
     lr          : learning rate (default 3e-5)
     warmup_steps: linear warmup steps (default 1 000)
-    max_epochs  : number of training epochs (default 20)
+    max_epochs  : total training epochs (default 20)
     grad_clip   : gradient clipping norm (default 1.0)
     fp16        : whether to use mixed-precision training
     log_every   : log training loss every N steps
     eval_every  : run validation every N steps (0 = epoch-level only)
     save_best   : save checkpoint only when validation ADIR improves
+    paa_pretrain_epochs : epochs to train PAA+encoder only (default 5)
+    dem_pretrain_epochs : epochs to train DEM+encoder only (default 5)
+    grad_accum_steps    : gradient accumulation steps (default 16)
     device      : torch device (auto-detected if None)
     """
 
@@ -67,6 +80,9 @@ class SFTTrainer:
         log_every: int = 50,
         eval_every: int = 0,
         save_best: bool = True,
+        paa_pretrain_epochs: int = 5,
+        dem_pretrain_epochs: int = 5,
+        grad_accum_steps: int = 16,
         device: Optional[torch.device] = None,
     ):
         self.model     = model
@@ -83,19 +99,27 @@ class SFTTrainer:
         self.log_every    = log_every
         self.eval_every   = eval_every
         self.save_best    = save_best
+        self.paa_pretrain_epochs = paa_pretrain_epochs
+        self.dem_pretrain_epochs = dem_pretrain_epochs
+        self.grad_accum_steps    = grad_accum_steps
+        self.grad_clip    = grad_clip
+        self.fp16         = fp16
+        self.log_every    = log_every
+        self.eval_every   = eval_every
+        self.save_best    = save_best
 
         self.device = device or (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         )
         self.model.to(self.device)
 
-        # Optimizer
+        # Optimizer covers all trainable parameters (emotion encoder starts frozen)
         no_decay = {"bias", "LayerNorm.weight"}
         params = [
             {
                 "params": [p for n, p in model.named_parameters()
                            if not any(nd in n for nd in no_decay)],
-                "weight_decay": 0.01,
+                "weight_decay": float(self.config.weight_decay),
             },
             {
                 "params": [p for n, p in model.named_parameters()
@@ -105,7 +129,7 @@ class SFTTrainer:
         ]
         self.optimizer = AdamW(params, lr=lr)
 
-        total_steps = max_epochs * len(train_dl)
+        total_steps = max_epochs * (len(train_dl) // grad_accum_steps + 1)
         self.scheduler = get_linear_schedule_with_warmup(
             self.optimizer,
             num_warmup_steps=warmup_steps,
@@ -114,8 +138,55 @@ class SFTTrainer:
 
         self.scaler = torch.cuda.amp.GradScaler(enabled=fp16 and self.device.type == "cuda")
 
-        self.best_val_adir = float("inf")
+        self.best_val_adir = float("-inf")
         self.global_step   = 0
+
+        # Track current training phase for staged training
+        self._training_phase: str = "paa"   # "paa" | "dem" | "joint"
+        self._set_phase("paa")
+
+    # ------------------------------------------------------------------
+    # Staged training phase control
+    # ------------------------------------------------------------------
+
+    def _set_phase(self, phase: str) -> None:
+        """
+        Control which parameters receive gradients.
+        phase = "paa"   : encoder + PAA + emotion_encoder only
+        phase = "dem"   : encoder + DEM only
+        phase = "joint" : all modules
+        """
+        if phase == self._training_phase:
+            return
+        self._training_phase = phase
+        m = self.model
+
+        # Freeze everything first
+        for p in m.parameters():
+            p.requires_grad_(False)
+
+        if phase == "paa":
+            for p in m.encoder_model.parameters():
+                p.requires_grad_(True)
+            for p in m.paa.parameters():
+                p.requires_grad_(True)
+            print("  [Trainer] Phase → PAA pre-training (encoder + PAA)")
+
+        elif phase == "dem":
+            for p in m.encoder_model.parameters():
+                p.requires_grad_(True)
+            for p in m.dem.parameters():
+                p.requires_grad_(True)
+            print("  [Trainer] Phase → DEM pre-training (encoder + DEM)")
+
+        elif phase == "joint":
+            for p in m.parameters():
+                p.requires_grad_(True)
+            # emotion_encoder stays frozen until unfreeze_emotion_encoder() is called
+            if m._emotion_frozen:
+                for p in m.emotion_encoder.parameters():
+                    p.requires_grad_(False)
+            print("  [Trainer] Phase → Joint training (all modules)")
 
     # ------------------------------------------------------------------
     # Training loop
@@ -123,15 +194,34 @@ class SFTTrainer:
 
     def train(self) -> dict[str, list[float]]:
         """
-        Run the full training loop.
+        Run the full staged training loop.
 
         Returns
         -------
         history : dict with lists of train_loss, val_adir per epoch
         """
         history: dict[str, list[float]] = {"train_loss": [], "val_adir": []}
+        freeze_unfreeze_epoch = getattr(self.config, "freeze_emotion_encoder_epochs", 5)
 
         for epoch in range(1, self.max_epochs + 1):
+
+            # --- Phase transitions ---
+            if epoch == 1:
+                self._set_phase("paa")
+            elif epoch == self.paa_pretrain_epochs + 1:
+                self._set_phase("dem")
+            elif epoch == self.paa_pretrain_epochs + self.dem_pretrain_epochs + 1:
+                self._set_phase("joint")
+
+            # --- Unfreeze emotion encoder after N total epochs ---
+            if epoch == freeze_unfreeze_epoch + 1 and self.model._emotion_frozen:
+                self.model.unfreeze_emotion_encoder()
+                # Re-enable gradients for newly unfrozen params in optimizer
+                for group in self.optimizer.param_groups:
+                    group["params"] = [
+                        p for p in self.model.parameters() if p.requires_grad
+                    ]
+
             epoch_loss = self._train_epoch(epoch)
             val_metrics = self.evaluate(self.val_dl)
 
@@ -140,13 +230,14 @@ class SFTTrainer:
 
             print(
                 f"[Epoch {epoch:02d}/{self.max_epochs}]  "
+                f"phase={self._training_phase}  "
                 f"train_loss={epoch_loss:.4f}  "
                 f"val_ADIR={val_metrics['ADIR']:.2f}%  "
-                f"val_EmpS={val_metrics['EmpS']:.4f}  "
+                f"val_EmoAcc={val_metrics['EmotAcc']:.2f}%  "
                 f"val_DecAcc={val_metrics['DecAcc']:.2f}%"
             )
 
-            if self.save_best and val_metrics["ADIR"] < self.best_val_adir:
+            if self.save_best and val_metrics["ADIR"] >= self.best_val_adir:
                 self.best_val_adir = val_metrics["ADIR"]
                 self._save_checkpoint("best_model")
                 print(f"  → New best ADIR={self.best_val_adir:.2f}%  checkpoint saved.")
@@ -158,6 +249,10 @@ class SFTTrainer:
         self.model.train()
         total_loss = 0.0
         t0 = time.time()
+        phase = self._training_phase
+        accum = self.grad_accum_steps
+
+        self.optimizer.zero_grad()
 
         for step, batch in enumerate(self.train_dl, start=1):
             batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
@@ -173,29 +268,43 @@ class SFTTrainer:
                     user_attention_mask=batch["user_attention_mask"],
                     response_input_ids=batch["response_input_ids"],
                     response_attention_mask=batch["response_attention_mask"],
+                    emotion_input_ids=batch.get("emotion_input_ids"),
+                    emotion_attention_mask=batch.get("emotion_attention_mask"),
                     emotion_labels=batch["emotion_labels"],
                     aff_score_labels=batch["aff_score_labels"],
                     dec_labels=batch["dec_labels"],
                     adi_labels=batch["adi_labels"],
                 )
-                loss = out["total_loss"]
 
-            self.optimizer.zero_grad()
+                # Phase-aware loss: only activate relevant loss terms per stage
+                if phase == "paa":
+                    loss = out["loss_aff"]
+                elif phase == "dem":
+                    loss = out["loss_dec"]
+                else:  # "joint"
+                    loss = out["total_loss"]
+
+                # Scale for gradient accumulation
+                loss = loss / accum
+
             self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            self.scheduler.step()
 
-            total_loss += loss.item()
-            self.global_step += 1
+            if step % accum == 0 or step == len(self.train_dl):
+                self.scaler.unscale_(self.optimizer)
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                self.scheduler.step()
+                self.optimizer.zero_grad()
+                self.global_step += 1
+
+            total_loss += loss.item() * accum  # un-scale for logging
 
             if step % self.log_every == 0:
                 avg = total_loss / step
                 elapsed = time.time() - t0
                 print(
-                    f"  Epoch {epoch} | step {step}/{len(self.train_dl)} | "
+                    f"  Epoch {epoch} [{phase}] | step {step}/{len(self.train_dl)} | "
                     f"loss={avg:.4f} | {elapsed:.1f}s"
                 )
 
@@ -229,6 +338,8 @@ class SFTTrainer:
                 user_attention_mask=batch["user_attention_mask"],
                 response_input_ids=batch["response_input_ids"],
                 response_attention_mask=batch["response_attention_mask"],
+                emotion_input_ids=batch.get("emotion_input_ids"),
+                emotion_attention_mask=batch.get("emotion_attention_mask"),
             )
             s_aff = out["S_aff"].cpu().numpy()
             s_dec = out["S_dec"].cpu().numpy()
@@ -262,7 +373,6 @@ class SFTTrainer:
         path = self.output_dir / name
         path.mkdir(parents=True, exist_ok=True)
         torch.save(self.model.state_dict(), path / "model.pt")
-        torch.save(self.optimizer.state_dict(), path / "optimizer.pt")
         print(f"  Checkpoint saved → {path}")
 
     def load_checkpoint(self, name: str = "best_model") -> None:

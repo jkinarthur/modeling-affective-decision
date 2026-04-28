@@ -68,54 +68,7 @@ services:
     # ---- named commands ------------------------------------------
     # Override the default CMD by passing a service profile name
     # via: sudo docker-compose run --rm addan <command>
-    entrypoint: >
-      /bin/bash -c "
-        case \"$$1\" in
-          build)
-            python -m src.data.build_tad_bench \
-              --output_dir /app/data \
-              --total_n $$TOTAL_N
-            ;;
-          train-sft)
-            python train.py \
-              --stage sft \
-              --data_dir /app/data \
-              --output_dir /app/checkpoints/sft \
-              --max_epochs $$MAX_EPOCHS \
-              --batch_size $$BATCH_SIZE \
-              --lr $$LR \
-              --fp16
-            ;;
-          train-rl)
-            python train.py \
-              --stage rl \
-              --data_dir /app/data \
-              --sft_ckpt /app/checkpoints/sft/best_model \
-              --output_dir /app/checkpoints/rl \
-              --rl_epochs $$RL_EPOCHS \
-              --ppo_epochs $$PPO_EPOCHS \
-              --fp16
-            ;;
-          evaluate)
-            python evaluate.py \
-              --ckpt /app/checkpoints/sft/best_model \
-              --data_dir /app/data \
-              --output_csv /app/checkpoints/eval_results.csv \
-              --generate
-            ;;
-          smoke)
-            python train.py \
-              --stage sft \
-              --synthetic \
-              --max_epochs 2 \
-              --batch_size 4 \
-              --no_fp16
-            ;;
-          *)
-            exec \"$$@\"
-            ;;
-        esac
-      " --
+    entrypoint: ["/app/entrypoint.sh"]
 
 # ---- named volumes -----------------------------------------------
 volumes:

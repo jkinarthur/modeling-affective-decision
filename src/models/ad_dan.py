@@ -18,7 +18,12 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from transformers import BartModel, BartForConditionalGeneration, BartTokenizer
+from transformers import (
+    AutoModel,
+    BartForConditionalGeneration,
+    BartTokenizer,
+    DebertaV2Model,
+)
 
 from .modules import PAA, DEM, CMIA, InconsistencyEstimator
 
@@ -29,11 +34,20 @@ from .modules import PAA, DEM, CMIA, InconsistencyEstimator
 
 @dataclasses.dataclass
 class ADDANConfig:
-    """Hyper-parameters for AD-DAN (defaults match the paper)."""
+    """Hyper-parameters for AD-DAN."""
 
-    # Encoder
+    # Shared encoder: DeBERTa-v3-base
+    encoder_model_name: str = "microsoft/deberta-v3-base"
+    # Pre-trained emotion backbone for PAA
+    emotion_model_name: str = "j-hartmann/emotion-english-distilroberta-base"
+    # Generation model (BART, kept for RL decoding only)
     bart_model_name: str = "facebook/bart-base"
     max_seq_len: int = 512
+    freeze_emotion_encoder_epochs: int = 5  # unfreeze after this many epochs
+
+    # Memory optimisation flags
+    gradient_checkpointing: bool = True   # saves ~60% activation memory at ~30% speed cost
+    load_generation_model: bool = True    # set False during SFT to skip loading BART (~530MB)
 
     # PAA
     num_emotions: int = 32          # EmpatheticDialogues emotion categories
@@ -47,17 +61,30 @@ class ADDANConfig:
     # CMIA
     cmia_dropout: float = 0.1
 
+    # Regularization
+    weight_decay: float = 0.01
+    emotion_label_smoothing: float = 0.1
+
     # Loss weights
     lambda_adi: float = 0.5         # weight on L_adi
     mu1: float = 0.1                # empathy score regression weight
     mu2: float = 0.1                # calibration weight
     mu3: float = 0.1                # ADI regression weight
+    dec_pos_weight: float = 1.0     # positive class weight for BCE (set from data)
+    emotion_class_weights: Optional[object] = None  # torch.Tensor of shape (num_emotions,)
+
+    # Gradient accumulation (effective batch = batch_size * accum_steps)
+    grad_accum_steps: int = 16
 
     # Reward weights (RL stage)
-    reward_alpha: float = 0.35      # S_aff weight
-    reward_beta: float = 0.45       # S_dec weight
-    reward_gamma_adi: float = 0.20  # ADI penalty weight
+    reward_alpha: float = 0.35      # S_aff reward weight
+    reward_beta: float = 0.45       # S_dec penalty weight
+    reward_gamma_adi: float = 0.20  # ADI reward weight
+    reward_adir_tau_bonus: float = 0.30  # bonus for crossing ADIR threshold tau
+    reward_tau_sharpness: float = 12.0   # sharpness of smooth threshold bonus
     reward_kl_eta: float = 0.02     # KL divergence penalty
+    reward_margin_spread: float = 0.05  # discourages score-collapse in RL
+    reward_direct_alpha: float = 1.0    # weight for eval-aligned reward on original response
 
     # ADI threshold for ADIR computation
     tau: float = 0.5
@@ -91,21 +118,41 @@ class ADDAN(nn.Module):
         self.config = config or ADDANConfig()
         cfg = self.config
 
-        # ---- Shared encoder (BART-base encoder only for scoring) ----------
-        self.encoder_model = BartModel.from_pretrained(cfg.bart_model_name)
-        hidden_dim: int = self.encoder_model.config.d_model  # 768
+        # ---- Shared encoder: DeBERTa-v3-base (768-dim) --------------------
+        self.encoder_model = DebertaV2Model.from_pretrained(cfg.encoder_model_name)
+        hidden_dim: int = self.encoder_model.config.hidden_size  # 768
 
-        # ---- Full seq2seq model for generation ----------------------------
-        self.seq2seq = BartForConditionalGeneration.from_pretrained(
-            cfg.bart_model_name
-        )
+        # ---- Pre-trained emotion backbone for PAA -------------------------
+        # j-hartmann/emotion-english-distilroberta-base: DistilRoBERTa
+        # fine-tuned on GoEmotions → strong emotion representations out-of-box.
+        # We use its [CLS] hidden state (768-dim) as input to the PAA head.
+        # Frozen for the first `freeze_emotion_encoder_epochs` epochs.
+        self.emotion_encoder = AutoModel.from_pretrained(cfg.emotion_model_name)
+        emotion_hidden_dim: int = self.emotion_encoder.config.hidden_size  # 768
+        self._emotion_frozen: bool = True
+        for p in self.emotion_encoder.parameters():
+            p.requires_grad_(False)
 
-        # Share the encoder weights between scorer and generator
-        self.encoder_model.encoder = self.seq2seq.model.encoder
+        # ---- Full seq2seq model for generation (RL stage only) ------------
+        # Skip loading during SFT to save ~530MB on the T4.
+        if cfg.load_generation_model:
+            self.seq2seq = BartForConditionalGeneration.from_pretrained(
+                cfg.bart_model_name
+            )
+        else:
+            self.seq2seq = None
+
+        # ---- Gradient checkpointing (trade compute for activation memory) -
+        if cfg.gradient_checkpointing:
+            self.encoder_model.gradient_checkpointing_enable()
+            # emotion_encoder is frozen but still forward-passes; enable too
+            self.emotion_encoder.gradient_checkpointing_enable()
 
         # ---- Task-specific modules ----------------------------------------
+        # PAA now receives emotion_hidden_dim from emotion_encoder, not hidden_dim
         self.paa = PAA(
             hidden_dim=hidden_dim,
+            emotion_hidden_dim=emotion_hidden_dim,
             num_emotions=cfg.num_emotions,
             num_heads=cfg.paa_num_heads,
             dropout=cfg.paa_dropout,
@@ -122,17 +169,37 @@ class ADDAN(nn.Module):
     # Encoding helpers
     # ------------------------------------------------------------------
 
+    def unfreeze_emotion_encoder(self) -> None:
+        """Unfreeze the emotion backbone (called by trainer after N epochs)."""
+        if self._emotion_frozen:
+            for p in self.emotion_encoder.parameters():
+                p.requires_grad_(True)
+            self._emotion_frozen = False
+            print("  [AD-DAN] Emotion encoder unfrozen.")
+
     def encode(
         self,
         input_ids: torch.Tensor,        # (B, L)
         attention_mask: torch.Tensor,   # (B, L)
     ) -> torch.Tensor:
-        """Run BART encoder and return hidden states (B, L, d)."""
-        outputs = self.seq2seq.model.encoder(
+        """Run DeBERTa encoder and return hidden states (B, L, d)."""
+        outputs = self.encoder_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
         )
         return outputs.last_hidden_state  # (B, L, d)
+
+    def encode_emotion(
+        self,
+        input_ids: torch.Tensor,        # (B, L)
+        attention_mask: torch.Tensor,   # (B, L)
+    ) -> torch.Tensor:
+        """Run pre-trained emotion encoder and return [CLS] vector (B, d)."""
+        outputs = self.emotion_encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+        return outputs.last_hidden_state[:, 0, :]  # (B, d)
 
     # ------------------------------------------------------------------
     # Forward – SFT scoring pass
@@ -149,6 +216,10 @@ class ADDAN(nn.Module):
         # Response to be scored, tokenized separately
         response_input_ids: torch.Tensor,       # (B, L_r)
         response_attention_mask: torch.Tensor,  # (B, L_r)
+        # Context re-tokenized with the emotion encoder's own tokenizer
+        # (RoBERTa vocab ~50K ≠ DeBERTa vocab ~128K — must be separate)
+        emotion_input_ids: Optional[torch.Tensor] = None,       # (B, L_emo)
+        emotion_attention_mask: Optional[torch.Tensor] = None,  # (B, L_emo)
         # Ground-truth labels (optional, for training)
         emotion_labels: Optional[torch.Tensor] = None,   # (B,) LongTensor
         aff_score_labels: Optional[torch.Tensor] = None, # (B,) float ∈ [0,1]
@@ -167,8 +238,12 @@ class ADDAN(nn.Module):
 
         h_global = H_ctx[:, 0, :]  # [CLS] global context vector (B, d)
 
-        # ---- PAA ----------------------------------------------------------
-        h_aff, e_hat, S_aff = self.paa(H_ctx, context_attention_mask)
+        # ---- PAA (uses pre-trained emotion encoder for [CLS] features) ----
+        # Use emotion_input_ids (RoBERTa-tokenized) if provided; skip if not.
+        h_emo_cls = None
+        if emotion_input_ids is not None and emotion_attention_mask is not None:
+            h_emo_cls = self.encode_emotion(emotion_input_ids, emotion_attention_mask)
+        h_aff, e_hat, S_aff = self.paa(H_ctx, context_attention_mask, h_emo_cls)
 
         # ---- DEM ----------------------------------------------------------
         h_dec, S_dec = self.dem(H_resp, H_user, h_global, user_attention_mask)
@@ -205,16 +280,26 @@ class ADDAN(nn.Module):
 
     def _loss_aff(
         self,
-        e_hat: torch.Tensor,                          # (B, 32)
+        e_hat: torch.Tensor,                          # (B, 32) raw logits
         S_aff: torch.Tensor,                          # (B,)
         emotion_labels: torch.Tensor,                 # (B,)  LongTensor
         aff_score_labels: Optional[torch.Tensor],     # (B,) or None
     ) -> torch.Tensor:
         """L_aff = CE(emotion) + μ1 * MSE(S_aff)"""
-        L_ce = nn.functional.cross_entropy(e_hat, emotion_labels)
+        # Class-weighted cross-entropy to handle 32-class imbalance
+        weight = None
+        if self.config.emotion_class_weights is not None:
+            weight = self.config.emotion_class_weights.to(e_hat.device)
+        L_ce = nn.functional.cross_entropy(
+            e_hat,
+            emotion_labels,
+            weight=weight,
+            label_smoothing=float(self.config.emotion_label_smoothing),
+        )
         L_reg = torch.tensor(0.0, device=e_hat.device)
         if aff_score_labels is not None:
-            L_reg = nn.functional.mse_loss(S_aff, aff_score_labels)
+            with torch.amp.autocast(device_type="cuda", enabled=False):
+                L_reg = nn.functional.mse_loss(S_aff.float(), aff_score_labels.float())
         return L_ce + self.config.mu1 * L_reg
 
     def _loss_dec(
@@ -225,10 +310,20 @@ class ADDAN(nn.Module):
         """L_dec = BCE(S_dec) + μ2 * ECE_proxy"""
         if dec_labels is None:
             return torch.tensor(0.0, device=S_dec.device)
-        L_bce = nn.functional.binary_cross_entropy(S_dec, dec_labels)
-        # ECE proxy: penalise overconfident predictions away from 0.5
-        # (true ECE requires binning; this differentiable proxy approximates it)
-        ece_proxy = ((S_dec - dec_labels).abs() * (S_dec - 0.5).abs()).mean()
+        # Use pos_weight to handle class imbalance (set from training data)
+        with torch.amp.autocast(device_type="cuda", enabled=False):
+            S_dec_f = S_dec.float()
+            dec_labels_f = dec_labels.float()
+            eps = 1e-6
+            logit = torch.logit(S_dec_f.clamp(eps, 1.0 - eps))
+            pos_weight = float(self.config.dec_pos_weight)
+            # BCE with logits (handles numerical stability internally)
+            L_bce = nn.functional.binary_cross_entropy_with_logits(
+                logit, dec_labels_f,
+                pos_weight=torch.tensor([pos_weight], device=S_dec.device),
+                reduction='mean'
+            )
+            ece_proxy = ((S_dec_f - dec_labels_f).abs() * (S_dec_f - 0.5).abs()).mean()
         return L_bce + self.config.mu2 * ece_proxy
 
     def _loss_adi(

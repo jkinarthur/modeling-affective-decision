@@ -1,78 +1,76 @@
 #!/bin/bash
 # ============================================================
-# setup.sh  –  One-time NVIDIA driver setup for AD-DAN
+# setup.sh  –  One-time NVIDIA driver + Docker setup for AD-DAN
 #
-# Target: Deep Learning AMI Neuron (Amazon Linux 2023)
-#         g4dn.xlarge  /  NVIDIA Tesla T4 (16 GB)
+# Target: Amazon Linux 2023 kernel-6.1  /  g4dn.xlarge  /  NVIDIA T4
 #
 # Run once after launching the instance:
 #   bash setup.sh
-#
-# What this does:
-#   1. Installs kernel6.12-devel (avoids kernel-headers conflict)
-#   2. Downloads & installs NVIDIA Tesla driver 565.57.01
-#      (supports kernel 6.5+, certified for CUDA 12.7, supports T4)
-#   3. Verifies GPU with nvidia-smi
-#   4. Restarts Docker so nvidia-container-toolkit picks up the driver
-#   5. Disables Docker BuildKit (standalone docker-compose compatibility)
 # ============================================================
 
 set -e
 
-DRIVER_VER="565.57.01"
 KVER=$(uname -r)
 
 echo "======================================================"
-echo "  AD-DAN AWS Setup"
+echo "  AD-DAN AWS Setup  (Amazon Linux 2023 kernel-6.1)"
 echo "  Kernel : ${KVER}"
-echo "  Driver : NVIDIA ${DRIVER_VER}"
 echo "======================================================"
 
-# ---- 1. Kernel build dependencies ----------------------------
+# ---- 1. Add NVIDIA CUDA repo ---------------------------------
 echo ""
-echo "[1/5] Installing kernel build dependencies..."
-# The Neuron AMI ships kernel6.12-headers which conflicts with the
-# generic 'kernel-headers' / 'kernel-devel' packages.
-# kernel6.12-devel is the correct versioned package for this AMI.
-sudo dnf install -y "kernel6.12-devel-${KVER}" gcc make perl 2>/dev/null \
-  || sudo dnf install -y kernel6.12-devel gcc make perl
+echo "[1/5] Adding NVIDIA CUDA repository..."
+sudo dnf config-manager --add-repo \
+    https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo
+sudo dnf clean all
 echo "      Done."
 
-# ---- 2. Download NVIDIA driver --------------------------------
+# ---- 2. Install NVIDIA driver --------------------------------
 echo ""
-echo "[2/5] Downloading NVIDIA Tesla driver ${DRIVER_VER}..."
-cd /tmp
-wget -q --show-progress \
-  "https://us.download.nvidia.com/tesla/${DRIVER_VER}/NVIDIA-Linux-x86_64-${DRIVER_VER}.run" \
-  -O nvidia-driver.run
-chmod +x nvidia-driver.run
+echo "[2/5] Installing NVIDIA driver..."
+sudo dnf install -y kernel-devel-$(uname -r) gcc make 2>/dev/null \
+    || sudo dnf install -y kernel-devel gcc make
+sudo dnf module install -y nvidia-driver:latest-dkms 2>/dev/null \
+    || sudo dnf install -y nvidia-driver-latest-dkms
 echo "      Done."
 
-# ---- 3. Install NVIDIA driver ---------------------------------
+# ---- 3. Verify GPU -------------------------------------------
 echo ""
-echo "[3/5] Installing NVIDIA driver (takes ~2 minutes)..."
-sudo /tmp/nvidia-driver.run \
-  --silent \
-  --no-cc-version-check \
-  --no-questions \
-  --kernel-source-path "/usr/src/kernels/${KVER}" 2>&1 \
-  | grep -E "^(ERROR|WARNING|Installing)" || true
-echo "      Done."
-
-# ---- 4. Verify GPU -------------------------------------------
-echo ""
-echo "[4/5] Verifying GPU access..."
+echo "[3/5] Verifying GPU access..."
 nvidia-smi
 
-# ---- 5. Configure Docker -------------------------------------
+# ---- 4. Install Docker CE ------------------------------------
 echo ""
-echo "[5/5] Configuring Docker..."
+echo "[4/5] Installing Docker + nvidia-container-toolkit..."
+sudo dnf install -y docker
+sudo systemctl enable docker
+sudo systemctl start docker
+sudo usermod -aG docker ec2-user
 
-# Reconfigure nvidia-container-toolkit runtime (idempotent)
+# nvidia-container-toolkit
+curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo \
+    | sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo > /dev/null
+sudo dnf install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker
-
-# Restart Docker to pick up new driver libraries
 sudo systemctl restart docker
+echo "      Done."
+
+# ---- 5. Install docker-compose v2 plugin ---------------------
+echo ""
+echo "[5/5] Installing docker-compose v2..."
+COMPOSE_VER="v2.27.0"
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-linux-x86_64" \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+echo ""
+echo "======================================================"
+echo "  Setup complete! Next:"
+echo "  cd ~/modeling-affective-decision"
+echo "  DOCKER_BUILDKIT=0 docker compose build"
+echo "  docker compose run --rm addan train-sft"
+echo "======================================================"
 
 # Set DOCKER_BUILDKIT=0 system-wide so standalone docker-compose
 # doesn't require buildx >= 0.17

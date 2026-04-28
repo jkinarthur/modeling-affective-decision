@@ -43,22 +43,25 @@ class PAA(nn.Module):
 
     Steps
     -----
-    1. Emotion-detection MHA over encoder hidden states H ∈ ℝ^{L×d}
-    2. 32-way softmax emotion classifier over [CLS] position
-    3. Two-layer MLP fuses emotion logits with global context → h_aff
-    4. Linear sigmoid head → S_aff ∈ [0, 1]
+    1. Emotion-detection MHA over DeBERTa encoder hidden states H ∈ ℝ^{L×d}
+    2. Fuse with pre-trained emotion encoder [CLS] (h_emo_cls) via projection
+    3. 32-way softmax emotion classifier over fused representation
+    4. Two-layer MLP fuses emotion logits with context → h_aff
+    5. Linear sigmoid head → S_aff ∈ [0, 1]
 
     Parameters
     ----------
-    hidden_dim  : encoder hidden size (768 for BART-base)
-    num_emotions: number of emotion categories (32 for EmpatheticDialogues)
-    num_heads   : heads for emotion MHA  (paper: 8, d_k = 96)
-    dropout     : dropout probability
+    hidden_dim       : DeBERTa encoder hidden size (768)
+    emotion_hidden_dim: pre-trained emotion encoder hidden size (768)
+    num_emotions     : number of emotion categories (32 for EmpatheticDialogues)
+    num_heads        : heads for emotion MHA  (paper: 8, d_k = 96)
+    dropout          : dropout probability
     """
 
     def __init__(
         self,
         hidden_dim: int = 768,
+        emotion_hidden_dim: int = 768,
         num_emotions: int = 32,
         num_heads: int = 8,
         dropout: float = 0.1,
@@ -66,7 +69,7 @@ class PAA(nn.Module):
         super().__init__()
         self.hidden_dim = hidden_dim
 
-        # Multi-head self-attention for emotion detection
+        # Multi-head self-attention for emotion detection on DeBERTa states
         self.emotion_mha = nn.MultiheadAttention(
             embed_dim=hidden_dim,
             num_heads=num_heads,
@@ -75,11 +78,15 @@ class PAA(nn.Module):
         )
         self.emotion_norm = nn.LayerNorm(hidden_dim)
 
-        # 32-way emotion classifier (operates on [CLS] token)
+        # Project pre-trained emotion encoder output into shared hidden_dim
+        self.emo_proj = nn.Linear(emotion_hidden_dim, hidden_dim)
+        self.emo_fusion_norm = nn.LayerNorm(hidden_dim)
+
+        # 32-way emotion classifier (operates on fused [CLS] token)
         self.emotion_head = nn.Linear(hidden_dim, num_emotions)
 
         # Affective alignment estimator MLP
-        # Input: concat([CLS] from emotion MHA, emotion logits)
+        # Input: concat(fused [CLS], emotion logits)
         self.alignment_mlp = MLP(
             in_dim=hidden_dim + num_emotions,
             hidden_dim=hidden_dim,
@@ -92,8 +99,9 @@ class PAA(nn.Module):
 
     def forward(
         self,
-        H: torch.Tensor,           # (B, L, d)  encoder hidden states
-        attention_mask: torch.Tensor | None = None,  # (B, L)  True = keep
+        H: torch.Tensor,                        # (B, L, d)  DeBERTa hidden states
+        attention_mask: torch.Tensor | None = None,  # (B, L)
+        h_emo_cls: torch.Tensor | None = None,  # (B, emotion_hidden_dim) pre-trained [CLS]
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Returns
@@ -102,8 +110,6 @@ class PAA(nn.Module):
         e_hat : (B, 32)  emotion probability distribution
         S_aff : (B,)     affective alignment score ∈ [0, 1]
         """
-        # Convert HuggingFace attention mask (1=keep, 0=pad) to
-        # PyTorch MHA key_padding_mask (True=ignore)
         key_padding_mask = None
         if attention_mask is not None:
             key_padding_mask = attention_mask == 0  # (B, L)
@@ -111,15 +117,22 @@ class PAA(nn.Module):
         H_emo, _ = self.emotion_mha(H, H, H, key_padding_mask=key_padding_mask)
         H_emo = self.emotion_norm(H_emo + H)          # residual
 
-        cls_emo = H_emo[:, 0, :]                      # (B, d) [CLS]
-        e_hat = F.softmax(self.emotion_head(cls_emo), dim=-1)   # (B, 32)
+        cls_emo = H_emo[:, 0, :]                      # (B, d) [CLS] from DeBERTa
 
-        # Fuse emotion logits with global context
-        h_aff_in = torch.cat([cls_emo, e_hat], dim=-1)          # (B, d+32)
+        # Fuse with pre-trained emotion encoder output if provided
+        if h_emo_cls is not None:
+            cls_emo = self.emo_fusion_norm(cls_emo + self.emo_proj(h_emo_cls))
+
+        # Keep raw logits for CE loss; use probabilities only for feature fusion.
+        e_logits = self.emotion_head(cls_emo)                    # (B, 32)
+        e_probs = F.softmax(e_logits, dim=-1)                    # (B, 32)
+
+        # Fuse emotion logits with fused context
+        h_aff_in = torch.cat([cls_emo, e_probs], dim=-1)        # (B, d+32)
         h_aff = self.alignment_mlp(h_aff_in)                    # (B, d)
 
         S_aff = torch.sigmoid(self.score_head(h_aff)).squeeze(-1)  # (B,)
-        return h_aff, e_hat, S_aff
+        return h_aff, e_logits, S_aff
 
 
 # ---------------------------------------------------------------------------
