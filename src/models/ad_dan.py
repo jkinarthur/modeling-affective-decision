@@ -78,13 +78,13 @@ class ADDANConfig:
 
     # Reward weights (RL stage)
     reward_alpha: float = 0.35      # S_aff reward weight
-    reward_beta: float = 0.45       # S_dec penalty weight
-    reward_gamma_adi: float = 0.20  # ADI reward weight
-    reward_adir_tau_bonus: float = 0.30  # bonus for crossing ADIR threshold tau
-    reward_tau_sharpness: float = 12.0   # sharpness of smooth threshold bonus
+    reward_beta: float = 0.85       # S_dec reward weight
+    reward_gamma_adi: float = 0.80  # ADI penalty weight
+    reward_adir_tau_bonus: float = 0.80  # ADIR-threshold penalty weight
+    reward_tau_sharpness: float = 16.0   # sharpness of smooth threshold penalty
     reward_kl_eta: float = 0.02     # KL divergence penalty
     reward_margin_spread: float = 0.05  # discourages score-collapse in RL
-    reward_direct_alpha: float = 1.0    # weight for eval-aligned reward on original response
+    reward_direct_alpha: float = 1.5    # weight for eval-aligned reward on original response
 
     # ADI threshold for ADIR computation
     tau: float = 0.5

@@ -94,6 +94,98 @@ docker compose run --rm addan python evaluate.py \
   --tau 0.50
 ```
 
+### Reviewer Diagnostics Export
+
+To directly populate the revised paper sections (confusion matrix, ADI
+distribution statistics, histogram bins, distress prior estimate):
+
+```bash
+docker compose run --rm addan python evaluate.py \
+  --ckpt ./checkpoints/rl/rl_epoch_06 \
+  --data_dir ./data \
+  --tau 0.50 \
+  --model_name AD-DAN_RL \
+  --artifacts_dir ./checkpoints/artifacts
+```
+
+This writes `*_metrics.json`, `*_confusion.csv`, `*_adi_stats.csv`,
+`*_adi_hist.csv`, `*_saff_hist.csv`, `*_sdec_hist.csv`, and
+`*_distress_prior.json`.
+
+To aggregate multiple model outputs into paper-ready tables:
+
+```bash
+python scripts/reviewer/aggregate_results.py \
+  --input_dir ./checkpoints/artifacts \
+  --output_dir ./checkpoints/artifacts/paper_ready
+```
+
+For external baseline model outputs (e.g., GPT-4.1, Llama-3.1), evaluate a
+prediction CSV with the same ADI metrics:
+
+```bash
+python scripts/reviewer/evaluate_baseline_csv.py \
+  --input_csv ./results/gpt41_predictions.csv \
+  --model_name GPT-4.1 \
+  --tau 0.50 \
+  --artifacts_dir ./checkpoints/artifacts
+```
+
+For open-source modern baselines, generate responses and score them with the
+same AD-DAN scorer:
+
+```bash
+python scripts/reviewer/run_open_llm_baseline.py \
+  --llm_model meta-llama/Llama-3.1-8B-Instruct \
+  --scorer_ckpt ./checkpoints/rl/rl_epoch_06 \
+  --data_dir ./data \
+  --output_csv ./checkpoints/artifacts/llama31_preds.csv \
+  --max_samples 300
+```
+
+## AWS Migration (SageMaker)
+
+You can run the same containerized pipeline on AWS and pull artifacts back for
+paper updates.
+
+1. Build and push the Docker image to ECR.
+2. Submit stage jobs (`build`, `train-sft`, `train-rl`, `evaluate`,
+   `reviewer-suite`) with:
+
+```bash
+python aws/submit_sagemaker_job.py \
+  --role-arn <SAGEMAKER_EXECUTION_ROLE_ARN> \
+  --image-uri <ACCOUNT>.dkr.ecr.<REGION>.amazonaws.com/addan:latest \
+  --s3-output s3://<BUCKET>/addan/jobs \
+  --instance-type ml.g5.2xlarge \
+  --entrypoint train-rl
+```
+
+Set `--entrypoint evaluate` or `--entrypoint reviewer-suite` for diagnostic and
+aggregation runs.
+
+For a full end-to-end run in one SageMaker job (build + SFT + RL + evaluate +
+aggregation), use:
+
+```bash
+python aws/submit_sagemaker_job.py \
+  --role-arn <SAGEMAKER_EXECUTION_ROLE_ARN> \
+  --image-uri <ACCOUNT>.dkr.ecr.<REGION>.amazonaws.com/addan:latest \
+  --s3-output s3://<BUCKET>/addan/jobs \
+  --instance-type ml.g5.2xlarge \
+  --entrypoint full-experiment
+```
+
+To re-create AWS resources, push image, and launch in one command from Windows:
+
+```powershell
+pwsh aws/redeploy_and_launch.ps1 \
+  -AccountId <ACCOUNT_ID> \
+  -Region us-east-1 \
+  -RoleArn <SAGEMAKER_EXECUTION_ROLE_ARN> \
+  -Bucket <S3_BUCKET_NAME>
+```
+
 ## Architecture
 
 ### Core Components

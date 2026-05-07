@@ -1,18 +1,15 @@
-"""
-evaluate.py  –  Full evaluation script for AD-DAN
-===================================================
-Loads a checkpoint (SFT or RL), runs inference on the test set,
-reports all paper metrics with 95% bootstrap confidence intervals,
-and optionally saves per-sample predictions to a CSV.
+"""Full evaluation script for AD-DAN.
 
-Usage
------
-python evaluate.py --ckpt checkpoints/sft/best_model --synthetic
-python evaluate.py --ckpt checkpoints/rl/rl_epoch_03 \
-                   --output_csv results/predictions.csv
+This script evaluates a checkpoint and can export reviewer-facing diagnostics:
+- ADIR/ADIS/DecAcc with confidence intervals
+- confusion matrices (counts + normalized percentages)
+- ADI summary statistics and histogram bins
+- S_aff/S_dec score distributions
+- empirical estimate of P(poor decision | distress)
 """
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -25,11 +22,11 @@ from transformers import AutoTokenizer, BartTokenizer
 sys.path.insert(0, os.path.dirname(__file__))
 from src.models.ad_dan import ADDAN, ADDANConfig
 from src.data.dataset import (
-    make_synthetic_samples, build_dataloaders, TADBenchDataset, TADCollator,
+    make_synthetic_samples, build_dataloaders,
     load_tad_splits,
 )
 from src.utils.metrics import (
-    evaluate_all, adir, adis, bootstrap_ci, corpus_bleu4, corpus_rouge_l,
+    adir, adis, bootstrap_ci, corpus_bleu4, corpus_rouge_l,
 )
 
 
@@ -49,11 +46,94 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--synthetic",     action="store_true")
     p.add_argument("--n_synthetic",   type=int, default=300)
     p.add_argument("--output_csv",    type=str, default=None)
+    p.add_argument("--artifacts_dir", type=str, default=None,
+                   help="Directory for reviewer diagnostics (json/csv artifacts)")
+    p.add_argument("--model_name",    type=str, default="model",
+                   help="Model tag used in artifact filenames")
+    p.add_argument("--hist_bins",     type=int, default=10,
+                   help="Number of bins for histogram exports")
     p.add_argument("--generate",      action="store_true",
                    help="Also generate response text for BLEU/ROUGE evaluation")
     p.add_argument("--max_new_tokens", type=int, default=64)
     p.add_argument("--num_workers",   type=int, default=2)
     return p.parse_args()
+
+
+DISTRESS_EMOTION_IDS = {
+    # anxious, terrified, devastated, apprehensive
+    4, 30, 10, 5,
+}
+
+
+def _decision_confusion(dec_true: np.ndarray, dec_pred: np.ndarray) -> dict:
+    dec_true = dec_true.astype(int)
+    dec_pred = dec_pred.astype(int)
+    tn = int(((dec_true == 0) & (dec_pred == 0)).sum())
+    fp = int(((dec_true == 0) & (dec_pred == 1)).sum())
+    fn = int(((dec_true == 1) & (dec_pred == 0)).sum())
+    tp = int(((dec_true == 1) & (dec_pred == 1)).sum())
+    total = max(1, tn + fp + fn + tp)
+    return {
+        "TN": tn,
+        "FP": fp,
+        "FN": fn,
+        "TP": tp,
+        "TN_pct": 100.0 * tn / total,
+        "FP_pct": 100.0 * fp / total,
+        "FN_pct": 100.0 * fn / total,
+        "TP_pct": 100.0 * tp / total,
+    }
+
+
+def _summary_stats(values: np.ndarray) -> dict:
+    return {
+        "mean": float(np.mean(values)),
+        "median": float(np.median(values)),
+        "std": float(np.std(values)),
+        "min": float(np.min(values)),
+        "max": float(np.max(values)),
+        "p05": float(np.percentile(values, 5)),
+        "p10": float(np.percentile(values, 10)),
+        "p25": float(np.percentile(values, 25)),
+        "p75": float(np.percentile(values, 75)),
+        "p90": float(np.percentile(values, 90)),
+        "p95": float(np.percentile(values, 95)),
+    }
+
+
+def _histogram(values: np.ndarray, n_bins: int) -> pd.DataFrame:
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    counts, _ = np.histogram(values, bins=edges)
+    return pd.DataFrame({
+        "bin_left": edges[:-1],
+        "bin_right": edges[1:],
+        "count": counts,
+        "density": counts / max(1, counts.sum()),
+    })
+
+
+def _distress_prior(dec_true: np.ndarray, emotion_true: np.ndarray) -> dict:
+    mask = np.isin(emotion_true.astype(int), list(DISTRESS_EMOTION_IDS))
+    if mask.sum() == 0:
+        return {
+            "n_distress": 0,
+            "p_poor_decision_given_distress": None,
+            "note": "No distress emotion samples in evaluated split",
+        }
+    poor = (dec_true[mask] == 0).astype(int)
+    p_hat = float(np.mean(poor))
+    # Wilson 95% CI
+    n = int(mask.sum())
+    z = 1.96
+    denom = 1 + (z ** 2) / n
+    center = (p_hat + (z ** 2) / (2 * n)) / denom
+    radius = (z / denom) * np.sqrt((p_hat * (1 - p_hat) / n) + (z ** 2) / (4 * n ** 2))
+    return {
+        "n_distress": n,
+        "p_poor_decision_given_distress": p_hat,
+        "ci95_low": float(max(0.0, center - radius)),
+        "ci95_high": float(min(1.0, center + radius)),
+    }
 
 
 @torch.no_grad()
@@ -65,14 +145,12 @@ def run_evaluation(
     tau: float = 0.5,
     do_generate: bool = False,
     max_new_tokens: int = 64,
-) -> tuple[dict, pd.DataFrame]:
+    hist_bins: int = 10,
+) -> tuple[dict, pd.DataFrame, dict[str, pd.DataFrame | dict]]:
     """
     Full evaluation pass.
 
-    Returns
-    -------
-    metrics : dict of all paper metrics
-    df      : per-sample predictions DataFrame
+    Returns (metrics, predictions_df, diagnostics).
     """
     model.eval()
 
@@ -80,6 +158,7 @@ def run_evaluation(
     all_s_aff, all_s_dec = [], []
     all_e_preds, all_e_lbls = [], []
     all_dec_preds, all_dec_lbls = [], []
+    all_adi = []
     hypotheses, references = [], []
 
     for batch in dl:
@@ -107,6 +186,7 @@ def run_evaluation(
 
         all_s_aff.extend(s_aff.tolist())
         all_s_dec.extend(s_dec.tolist())
+        all_adi.extend(np.maximum(0.0, s_aff - s_dec).tolist())
         all_e_preds.extend(e_pred.tolist())
         all_e_lbls.extend(e_lbl.tolist())
         all_dec_preds.extend((s_dec > 0.5).astype(int).tolist())
@@ -135,6 +215,7 @@ def run_evaluation(
                 "sample_id": sid,
                 "S_aff":     float(s_aff[i]),
                 "S_dec":     float(s_dec[i]),
+                "ADI":       float(max(0.0, s_aff[i] - s_dec[i])),
                 "ADI_hat":   float(adi_h[i]),
                 "ADI_flag":  int(max(0.0, s_aff[i] - s_dec[i]) > tau),
                 "emotion_pred": int(e_pred[i]),
@@ -149,6 +230,7 @@ def run_evaluation(
     e_lbl_arr = np.array(all_e_lbls)
     d_arr     = np.array(all_dec_preds)
     d_lbl_arr = np.array(all_dec_lbls)
+    adi_arr   = np.array(all_adi)
 
     # Core metrics
     metrics = {
@@ -170,11 +252,68 @@ def run_evaluation(
     )
     metrics["ADIR_CI_95"] = f"[{ci_lo:.2f}%, {ci_hi:.2f}%]"
 
+    def _acc_fn(preds, labels):
+        return float(np.mean(preds == labels) * 100.0)
+
+    dec_ci_lo, dec_ci_hi = bootstrap_ci(
+        _acc_fn,
+        d_arr.astype(float),
+        d_lbl_arr.astype(float),
+        n_bootstrap=10_000,
+    )
+    metrics["DecAcc_CI_95"] = f"[{dec_ci_lo:.2f}%, {dec_ci_hi:.2f}%]"
+
     if do_generate and hypotheses:
         metrics["BLEU-4"]   = corpus_bleu4(hypotheses, references)
         metrics["ROUGE-L"]  = corpus_rouge_l(hypotheses, references)
 
-    return metrics, pd.DataFrame(rows)
+    diagnostics: dict[str, pd.DataFrame | dict] = {
+        "confusion": pd.DataFrame([_decision_confusion(d_lbl_arr, d_arr)]),
+        "adi_stats": pd.DataFrame([_summary_stats(adi_arr)]),
+        "saff_stats": pd.DataFrame([_summary_stats(s_aff_arr)]),
+        "sdec_stats": pd.DataFrame([_summary_stats(s_dec_arr)]),
+        "adi_hist": _histogram(adi_arr, n_bins=hist_bins),
+        "saff_hist": _histogram(s_aff_arr, n_bins=hist_bins),
+        "sdec_hist": _histogram(s_dec_arr, n_bins=hist_bins),
+        "distress_prior": _distress_prior(d_lbl_arr, e_lbl_arr),
+        "metric_consistency": pd.DataFrame([
+            {
+                "n_total": int(len(adi_arr)),
+                "n_critical_adi": int((adi_arr > tau).sum()),
+                "pct_critical_adi": float(100.0 * (adi_arr > tau).mean()),
+                "n_decision_correct": int((d_arr == d_lbl_arr).sum()),
+                "pct_decision_correct": float(100.0 * (d_arr == d_lbl_arr).mean()),
+                "n_near_threshold_adi_0.4_0.5": int(((adi_arr >= 0.4) & (adi_arr <= 0.5)).sum()),
+            }
+        ]),
+    }
+
+    return metrics, pd.DataFrame(rows), diagnostics
+
+
+def _save_artifacts(
+    artifacts_dir: str,
+    model_name: str,
+    metrics: dict,
+    preds_df: pd.DataFrame,
+    diagnostics: dict[str, pd.DataFrame | dict],
+) -> None:
+    out_dir = Path(artifacts_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = model_name.replace(" ", "_").replace("/", "_")
+
+    (out_dir / f"{safe_name}_metrics.json").write_text(
+        json.dumps(metrics, indent=2), encoding="utf-8"
+    )
+    preds_df.to_csv(out_dir / f"{safe_name}_predictions.csv", index=False)
+
+    for key, value in diagnostics.items():
+        if isinstance(value, pd.DataFrame):
+            value.to_csv(out_dir / f"{safe_name}_{key}.csv", index=False)
+        else:
+            (out_dir / f"{safe_name}_{key}.json").write_text(
+                json.dumps(value, indent=2), encoding="utf-8"
+            )
 
 
 def main() -> None:
@@ -239,11 +378,12 @@ def main() -> None:
     print(f"Loaded checkpoint: {ckpt_file}")
 
     # ---- Evaluate ----------------------------------------------------
-    metrics, df = run_evaluation(
+    metrics, df, diagnostics = run_evaluation(
         model, test_dl, tokenizer, device,
         tau=args.tau,
         do_generate=args.generate,
         max_new_tokens=args.max_new_tokens,
+        hist_bins=args.hist_bins,
     )
 
     print("\n=== Evaluation Results ===")
@@ -257,6 +397,10 @@ def main() -> None:
         Path(args.output_csv).parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(args.output_csv, index=False)
         print(f"\nPer-sample predictions saved to {args.output_csv}")
+
+    if args.artifacts_dir:
+        _save_artifacts(args.artifacts_dir, args.model_name, metrics, df, diagnostics)
+        print(f"Reviewer diagnostics saved to {args.artifacts_dir}")
 
 
 if __name__ == "__main__":

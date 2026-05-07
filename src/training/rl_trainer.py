@@ -4,10 +4,10 @@ PPO RL Trainer for AD-DAN
 Implements the Proximal Policy Optimization stage described in the paper.
 
 Reward function (terminal, per full response):
-    R(u_T, r_T) = α·S_aff − β·S_dec + γ_adi·ADI + b_tau·1[ADI>tau]
+    R(u_T, r_T) = α·S_aff + β·S_dec − γ_adi·ADI − b_tau·1[ADI>tau]
     R_total     = R − η·KL[π_θ(·|u_T) ‖ π_SFT(·|u_T)]
 
-with α=0.35, β=0.45, γ_adi=0.20, b_tau=0.30, η=0.02.
+with α=0.35, β=0.85, γ_adi=0.80, b_tau=0.80, η=0.02.
 
 PPO hyper-parameters (paper defaults):
     ε=0.1 (clip), 5 PPO epochs per rollout batch, batch_size=16.
@@ -200,14 +200,14 @@ class PPOTrainer:
 
         margin = s_aff - s_dec
         adi_metric = torch.clamp(margin, min=0.0)
-        tau_bonus = torch.sigmoid((margin - cfg.tau) * cfg.reward_tau_sharpness)
+        tau_penalty = torch.sigmoid((margin - cfg.tau) * cfg.reward_tau_sharpness)
         spread_bonus = torch.abs(margin - margin.mean())
 
         gen_reward = (
             cfg.reward_alpha * s_aff
-            - cfg.reward_beta * s_dec
-            + cfg.reward_gamma_adi * adi_metric
-            + cfg.reward_adir_tau_bonus * tau_bonus
+            + cfg.reward_beta * s_dec
+            - cfg.reward_gamma_adi * adi_metric
+            - cfg.reward_adir_tau_bonus * tau_penalty
             + cfg.reward_margin_spread * spread_bonus
         )
 
@@ -223,13 +223,13 @@ class PPOTrainer:
 
         margin_orig = s_aff_orig - s_dec_orig
         adi_orig    = torch.clamp(margin_orig, min=0.0)
-        tau_bonus_orig = torch.sigmoid((margin_orig - cfg.tau) * cfg.reward_tau_sharpness)
+        tau_penalty_orig = torch.sigmoid((margin_orig - cfg.tau) * cfg.reward_tau_sharpness)
 
         direct_reward = (
             cfg.reward_alpha * s_aff_orig
-            - cfg.reward_beta * s_dec_orig
-            + cfg.reward_gamma_adi * adi_orig
-            + cfg.reward_adir_tau_bonus * tau_bonus_orig
+            + cfg.reward_beta * s_dec_orig
+            - cfg.reward_gamma_adi * adi_orig
+            - cfg.reward_adir_tau_bonus * tau_penalty_orig
         )
 
         task_reward = gen_reward + cfg.reward_direct_alpha * direct_reward

@@ -1,0 +1,163 @@
+\documentclass[journal]{IEEEtran}
+
+\usepackage{amsmath,amsfonts,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+
+\title{Modeling Affective--Decision Inconsistency in Conversational AI Systems}
+
+\author{
+John Kingsley Arthur,~\IEEEmembership{Member, IEEE}
+\thanks{J. K. Arthur is with Northeastern University, Toronto, Canada (e-mail: [arthur.joh@northeastern.edu](mailto:arthur.joh@northeastern.edu)).}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Recent advances in affective computing have enabled conversational AI systems to recognize emotions and generate empathetic responses with high fluency and coherence. However, emotional alignment does not guarantee decision correctness, particularly in high-stakes domains such as mental health, finance, and advisory systems. In this paper, we introduce a novel problem termed \textit{Affective--Decision Inconsistency (ADI)}, which characterizes cases where a system produces emotionally appropriate responses that lead to incorrect or unsafe decisions. To address this challenge, we propose the \textit{Affect--Decision Dual Alignment Network (AD-DAN)}, a unified framework that jointly models affective alignment and decision correctness while explicitly minimizing inconsistency between them. AD-DAN integrates an affective alignment module, a decision evaluation module, and a novel inconsistency estimator, trained under a dual-objective optimization scheme. Experimental results demonstrate that optimizing for both emotional appropriateness and decision reliability significantly reduces inconsistency rates while preserving conversational quality. This work establishes a new direction in affective computing by bridging emotional intelligence and decision intelligence in conversational AI.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Affective computing, conversational AI, empathy modeling, decision alignment, AI safety, reinforcement learning.
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Affective computing has significantly advanced the ability of artificial intelligence systems to recognize human emotions and generate responses that align with users’ affective states. Modern conversational agents demonstrate high levels of fluency, coherence, and empathy, often appearing indistinguishable from human interlocutors. Despite these advancements, a critical limitation persists: emotionally aligned responses do not necessarily correspond to correct or safe decisions.
+
+In real-world scenarios, particularly in domains such as mental health support and financial advisory systems, conversational agents may produce responses that are empathetic yet decisionally inappropriate. This disconnect between affective alignment and decision correctness introduces a new class of failure that is not captured by existing evaluation paradigms.
+
+Current research in affective computing primarily focuses on two objectives: (i) accurate emotion recognition and (ii) empathetic response generation. While these objectives enhance user experience, they overlook the downstream implications of the system’s recommendations. Consequently, systems may exhibit high affective intelligence but low decision reliability.
+
+To address this gap, we introduce the concept of \textit{Affective--Decision Inconsistency (ADI)}. ADI formalizes the mismatch between emotional appropriateness and decision correctness, providing a foundation for analyzing and mitigating such failures. Building on this concept, we propose the \textit{Affect--Decision Dual Alignment Network (AD-DAN)}, a framework that jointly optimizes affective alignment and decision correctness while penalizing inconsistencies between them.
+
+The contributions of this paper are as follows:
+
+\begin{itemize}
+\item We introduce a novel problem, Affective--Decision Inconsistency (ADI), capturing the conflict between emotional alignment and decision correctness.
+\item We propose AD-DAN, a dual-alignment framework that integrates affective modeling and decision evaluation.
+\item We develop a new inconsistency-aware loss function that explicitly penalizes misalignment between affective and decision objectives.
+\item We demonstrate that jointly optimizing emotional and decision intelligence improves system reliability in conversational AI.
+\end{itemize}
+
+\section{Problem Formulation}
+
+Let $u$ denote a user input, and let $a$ denote the system response or action. We define two key components:
+
+\subsection{Affective Alignment}
+
+Affective alignment measures how well a response matches the user’s emotional state:
+\begin{equation}
+S_{\text{aff}}(u,a) \in [0,1]
+\end{equation}
+
+\subsection{Decision Correctness}
+
+Decision correctness evaluates whether the response leads to an appropriate or safe outcome:
+\begin{equation}
+S_{\text{dec}}(u,a) \in [0,1]
+\end{equation}
+
+\subsection{Affective--Decision Inconsistency (ADI)}
+
+We define ADI as:
+\begin{equation}
+ADI(u,a) = \max\left(0, S_{\text{aff}}(u,a) - S_{\text{dec}}(u,a)\right)
+\end{equation}
+
+ADI is high when emotional alignment is strong but decision correctness is weak.
+
+\section{Proposed Method: AD-DAN}
+
+\subsection{Architecture Overview}
+
+The proposed framework consists of three main components:
+
+\begin{enumerate}
+\item Affective Alignment Module
+\item Decision Evaluation Module
+\item Inconsistency Estimator
+\end{enumerate}
+
+\subsection{Affective Alignment Module}
+
+Given input $u$, the affective module predicts the emotional context:
+\begin{equation}
+h_{\text{aff}} = f_{\theta}(u)
+\end{equation}
+
+The affective score is computed as:
+\begin{equation}
+S_{\text{aff}} = \sigma(W_{\text{aff}} h_{\text{aff}})
+\end{equation}
+
+\subsection{Decision Evaluation Module}
+
+The decision module evaluates the correctness of response $a$:
+\begin{equation}
+h_{\text{dec}} = g_{\phi}(u,a)
+\end{equation}
+
+\begin{equation}
+S_{\text{dec}} = \sigma(W_{\text{dec}} h_{\text{dec}})
+\end{equation}
+
+\subsection{Inconsistency Estimator}
+
+\begin{equation}
+ADI(u,a) = S_{\text{aff}} - S_{\text{dec}}
+\end{equation}
+
+\section{Optimization Objective}
+
+The total loss function is defined as:
+\begin{equation}
+\mathcal{L} =
+\mathcal{L}*{\text{aff}} +
+\mathcal{L}*{\text{dec}} +
+\lambda \mathcal{L}_{\text{adi}}
+\end{equation}
+
+where:
+\begin{align}
+\mathcal{L}*{\text{aff}} &= \text{CrossEntropy}(S*{\text{aff}}, y_{\text{aff}}) \
+\mathcal{L}*{\text{dec}} &= \text{CrossEntropy}(S*{\text{dec}}, y_{\text{dec}}) \
+\mathcal{L}_{\text{adi}} &= \mathbb{E}[ADI(u,a)]
+\end{align}
+
+\section{Reinforcement Learning Extension}
+
+We further define a reward function:
+\begin{equation}
+R = \alpha S_{\text{aff}} + \beta S_{\text{dec}} - \gamma ADI
+\end{equation}
+
+This encourages both emotional alignment and decision correctness while penalizing inconsistency.
+
+\section{Experiments}
+
+We evaluate AD-DAN on conversational datasets with affective annotations and decision labels. Metrics include:
+
+\begin{itemize}
+\item Emotion Accuracy
+\item Empathy Score
+\item Decision Accuracy
+\item ADI Rate
+\end{itemize}
+
+\section{Discussion}
+
+Our results show that systems optimized solely for empathy can exhibit high ADI, indicating unsafe decision behavior. Incorporating decision alignment reduces ADI significantly.
+
+\section{Conclusion}
+
+We introduced Affective--Decision Inconsistency (ADI), a novel problem in affective computing, and proposed AD-DAN to address it. This work bridges the gap between emotional intelligence and decision intelligence in conversational AI.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

@@ -42,6 +42,14 @@ jobs:
     - name: Run tests with coverage
       run: |
         pytest tests/ -v --cov=src/ --cov-report=xml --cov-report=term-missing
+
+    - name: Syntax check utility scripts
+      run: |
+        python -m py_compile evaluate.py train.py
+        python -m py_compile scripts/reviewer/aggregate_results.py
+        python -m py_compile scripts/reviewer/evaluate_baseline_csv.py
+        python -m py_compile scripts/reviewer/run_open_llm_baseline.py
+        python -m py_compile aws/submit_sagemaker_job.py
     
     - name: Upload coverage
       uses: codecov/codecov-action@v3

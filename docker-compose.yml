@@ -59,7 +59,7 @@ services:
       - MAX_EPOCHS=${MAX_EPOCHS:-20}
       - BATCH_SIZE=${BATCH_SIZE:-32}
       - LR=${LR:-3e-5}
-      - RL_EPOCHS=${RL_EPOCHS:-3}
+      - RL_EPOCHS=${RL_EPOCHS:-6}
       - PPO_EPOCHS=${PPO_EPOCHS:-5}
       - TOKENIZERS_PARALLELISM=false
       - HF_HOME=/app/.cache/huggingface

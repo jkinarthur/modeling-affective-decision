@@ -1,0 +1,200 @@
+\relax 
+\citation{liu2021esc}
+\citation{zhou2018ecm}
+\citation{poria2019meld}
+\citation{rashkin2019empathetic}
+\citation{liu2021esc,wu2022priority}
+\citation{shen2022empathy}
+\citation{kim2023angle}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{}\protected@file@percent }
+\citation{rashkin2019empathetic}
+\citation{zhou2018ecm}
+\citation{kim2021moel}
+\citation{majumder2020mime}
+\citation{li2020empdg}
+\citation{li2022kemp}
+\citation{sabour2022cem}
+\citation{ma2023glhg}
+\citation{busso2008iemocap}
+\citation{poria2019meld}
+\citation{kim2023angle}
+\citation{liu2021esc}
+\citation{wu2022priority,cheng2022fado}
+\citation{li2016rl}
+\citation{ouyang2022instructgpt}
+\citation{schulman2017ppo}
+\citation{shen2022empathy}
+\citation{caruana1997multitask,liu2019mtdnn}
+\citation{bender2021parrots}
+\citation{hendrycks2021values}
+\@writefile{toc}{\contentsline {section}{\numberline {II}Related Work}{2}{}\protected@file@percent }
+\newlabel{sec:related}{{II}{2}{}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-A}}Empathetic Dialogue Generation}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-B}}Emotion Recognition in Conversation}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-C}}Emotional Support Conversation}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-D}}Reinforcement Learning for Affective Dialogue}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-E}}Multi-Objective Optimization in NLP}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-F}}AI Safety and Value Alignment}{2}{}\protected@file@percent }
+\citation{rashkin2019empathetic,liu2021esc}
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces Positioning of ADI against related affective dialogue research. \text  {$\mathsurround \z@ \mathchar "458$}~= addressed; \textup  {--}~= not addressed.}}{3}{}\protected@file@percent }
+\newlabel{tab:positioning}{{I}{3}{}{table.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-G}}Positioning of ADI against Related Work}{3}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {III}Problem Formulation}{3}{}\protected@file@percent }
+\newlabel{sec:problem}{{III}{3}{}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-A}}Task Definition}{3}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Decision correctness annotation rubric used in TAD-Bench.}}{3}{}\protected@file@percent }
+\newlabel{tab:dec_rubric}{{II}{3}{}{table.2}{}}
+\newlabel{def:adi}{{3}{3}{}{definition.3}{}}
+\newlabel{eq:adi}{{1}{3}{}{equation.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-B}}The Empathy--Decision Trade-off: Motivating Analysis}{3}{}\protected@file@percent }
+\newlabel{sec:theory_prelim}{{\mbox  {III-B}}{3}{}{subsection.3.2}{}}
+\newlabel{prop:tradeoff}{{1}{3}{}{proposition.1}{}}
+\citation{lewis2020bart}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Architecture of AD-DAN. The shared BART-based encoder feeds two parallel modules (PAA and DEM). Cross-Modal Inconsistency Attention (CMIA) creates explicit bidirectional gradient pathways (dashed red) between the two modules, enabling the decision objective to regularize affective representations and vice versa. The Inconsistency Estimator predicts ADI directly. An optional PPO RL stage fine-tunes the trained model.}}{4}{}\protected@file@percent }
+\newlabel{fig:architecture}{{1}{4}{}{figure.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {IV}AD-DAN: Affect--Decision Dual Alignment Network}{4}{}\protected@file@percent }
+\newlabel{sec:method}{{IV}{4}{}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-A}}Architecture Overview}{4}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-B}}Shared Context Encoder}{4}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-C}}Parallel Affective Alignment Module (PAA)}{4}{}\protected@file@percent }
+\newlabel{eq:haff}{{7}{4}{}{equation.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-D}}Decision Evaluation Module (DEM)}{4}{}\protected@file@percent }
+\citation{guo2017calibration}
+\citation{schulman2017ppo}
+\citation{ouyang2022instructgpt}
+\newlabel{eq:hdec}{{10}{5}{}{equation.10}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-E}}Cross-Modal Inconsistency Attention (CMIA)}{5}{}\protected@file@percent }
+\newlabel{eq:cmia1}{{12}{5}{}{equation.12}{}}
+\newlabel{eq:cmia2}{{13}{5}{}{equation.13}{}}
+\newlabel{eq:adi_pred}{{15}{5}{}{equation.15}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-F}}Inconsistency-Aware Dual-Objective Loss}{5}{}\protected@file@percent }
+\newlabel{eq:total_loss}{{16}{5}{}{equation.16}{}}
+\newlabel{eq:ladi}{{19}{5}{}{equation.19}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {V}Reinforcement Learning Extension}{5}{}\protected@file@percent }
+\newlabel{sec:rl}{{V}{5}{}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-A}}MDP Formulation}{5}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-B}}Composite Reward}{5}{}\protected@file@percent }
+\newlabel{eq:reward_gen}{{20}{5}{}{equation.20}{}}
+\newlabel{eq:reward_direct}{{21}{5}{}{equation.21}{}}
+\newlabel{eq:reward}{{22}{5}{}{equation.22}{}}
+\citation{rashkin2019empathetic}
+\citation{liu2021esc}
+\citation{liu2021esc}
+\citation{rashkin2019empathetic}
+\citation{vaswani2017attention}
+\citation{kim2021moel}
+\citation{majumder2020mime}
+\citation{li2020empdg}
+\citation{li2022kemp}
+\citation{sabour2022cem}
+\citation{ma2023glhg}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-C}}PPO Training}{6}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {VI}Theoretical Analysis}{6}{}\protected@file@percent }
+\newlabel{sec:theory}{{VI}{6}{}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VI-A}}Proof of Proposition~\ref {prop:tradeoff}}{6}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VI-B}}ADI Upper Bound Under AD-DAN}{6}{}\protected@file@percent }
+\newlabel{thm:adibound}{{1}{6}{}{theorem.1}{}}
+\newlabel{eq:bound}{{25}{6}{}{equation.25}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {VII}Experiments}{6}{}\protected@file@percent }
+\newlabel{sec:experiments}{{VII}{6}{}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-A}}Datasets and TAD-Bench}{6}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-B}}Baselines}{6}{}\protected@file@percent }
+\citation{cheng2022fado}
+\citation{papineni2002bleu}
+\citation{lin2004rouge}
+\citation{loshchilov2019adamw}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-C}}Evaluation Metrics}{7}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-D}}Implementation Details}{7}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-E}}Main Results on EmpatheticDialogues}{7}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-F}}Metric Consistency Diagnostics: Relationship among $S_\mathrm  {aff}$, $S_\mathrm  {dec}$, ADI, ADIR, and DecAcc}{7}{}\protected@file@percent }
+\newlabel{sec:metric_consistency}{{\mbox  {VII-F}}{7}{}{subsection.7.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-G}}ADI Distribution Diagnostics}{7}{}\protected@file@percent }
+\newlabel{sec:adi_distribution}{{\mbox  {VII-G}}{7}{}{subsection.7.7}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {III}{\ignorespaces Results on EmpatheticDialogues with TAD-Bench Annotations. Best results in \textbf  {bold}; second-best \underline  {underlined}. $\downarrow $~lower is better; $\uparrow $~higher is better.}}{8}{}\protected@file@percent }
+\newlabel{tab:ed_results}{{III}{8}{}{table.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {IV}{\ignorespaces Decision confusion matrices (normalized \%) on TAD-Bench. Rows are gold labels; columns are predicted labels.}}{8}{}\protected@file@percent }
+\newlabel{tab:cm_sft_rl}{{IV}{8}{}{table.4}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Distribution of $S_\mathrm  {aff}$ and $S_\mathrm  {dec}$ for AD-DAN$_\mathrm  {SFT}$ and AD-DAN$_\mathrm  {RL}$ on TAD-Bench. Plot will be replaced with final empirical curves in the revision package.}}{8}{}\protected@file@percent }
+\newlabel{fig:score_dist}{{2}{8}{}{figure.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {V}{\ignorespaces Per-instance ADI distribution statistics on TAD-Bench.}}{8}{}\protected@file@percent }
+\newlabel{tab:adi_stats}{{V}{8}{}{table.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Histogram of per-instance ADI values on TAD-Bench. The vertical threshold for ADIR is $\tau {=}0.5$.}}{8}{}\protected@file@percent }
+\newlabel{fig:adi_hist}{{3}{8}{}{figure.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-H}}Main Results on ESConv}{8}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-I}}Reward Weight Sensitivity Analysis}{8}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {VI}{\ignorespaces Results on ESConv. Best in \textbf  {bold}; second-best \underline  {underlined}.}}{9}{}\protected@file@percent }
+\newlabel{tab:esconv_results}{{VI}{9}{}{table.6}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {VII}{\ignorespaces Sensitivity analysis for RL reward weights on EmpatheticDialogues. $\alpha _\mathrm  {d}{=}1.5$ and $b_\tau {=}0.80$ are held fixed across all configurations. Default (Pipeline~6) in \textbf  {bold}.}}{9}{}\protected@file@percent }
+\newlabel{tab:reward_sensitivity}{{VII}{9}{}{table.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-J}}Robustness Evaluation}{9}{}\protected@file@percent }
+\newlabel{sec:robustness}{{\mbox  {VII-J}}{9}{}{subsection.7.10}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-K}}Statistical Significance}{9}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {VIII}{\ignorespaces Robustness evaluation: ADIR (\%) under three challenging interaction conditions.}}{9}{}\protected@file@percent }
+\newlabel{tab:robustness}{{VIII}{9}{}{table.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-L}}Empirical Check of the $p>0.5$ Assumption}{9}{}\protected@file@percent }
+\newlabel{sec:p_assumption}{{\mbox  {VII-L}}{9}{}{subsection.7.12}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-M}}Experimental Design Validity}{9}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-N}}Ablation Studies}{9}{}\protected@file@percent }
+\newlabel{sec:ablation}{{\mbox  {VII-N}}{9}{}{subsection.7.14}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {IX}{\ignorespaces Ablation Study on EmpatheticDialogues (TAD-Bench).}}{10}{}\protected@file@percent }
+\newlabel{tab:ablation}{{IX}{10}{}{table.9}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-O}}Analysis of ADI Rate by Emotion Category}{10}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-P}}Human Evaluation}{10}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces ADIR by emotion category. Distress-related emotions show dramatically higher ADIR for all baselines, empirically confirming Proposition~\ref {prop:tradeoff}. AD-DAN$_\mathrm  {RL}$ consistently outperforms the strongest baseline across all categories and is especially effective in distress-adjacent categories, while maintaining an overall ADIR of 6.60\%.}}{10}{}\protected@file@percent }
+\newlabel{fig:adi_analysis}{{4}{10}{}{figure.4}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces PPO reward convergence over 6 RL training epochs on TAD-Bench. The composite reward (Eq.~\ref {eq:reward}) rises from -0.295 in epoch~1 to 1.942 by epoch~6, indicating stable optimization under the distribution-aligned reward design.}}{10}{}\protected@file@percent }
+\newlabel{fig:rl_reward}{{5}{10}{}{figure.5}{}}
+\citation{hendrycks2021values,ouyang2022instructgpt}
+\@writefile{lot}{\contentsline {table}{\numberline {X}{\ignorespaces Human Evaluation on 1--5 Likert Scale. $^\dagger $Human upper bound from crowdsourced human responses.}}{11}{}\protected@file@percent }
+\newlabel{tab:human_eval}{{X}{11}{}{table.10}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-Q}}Qualitative Case Study}{11}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {VIII}Discussion}{11}{}\protected@file@percent }
+\newlabel{sec:discussion}{{VIII}{11}{}{section.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VIII-A}}Failure Analysis}{11}{}\protected@file@percent }
+\newlabel{sec:failure}{{\mbox  {VIII-A}}{11}{}{subsection.8.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VIII-B}}Ethics and Responsible Deployment}{11}{}\protected@file@percent }
+\newlabel{sec:ethics}{{\mbox  {VIII-B}}{11}{}{subsection.8.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VIII-C}}Implications for Trustworthy Affective AI}{11}{}\protected@file@percent }
+\citation{busso2008iemocap,kim2023angle}
+\bibstyle{IEEEtran}
+\bibdata{references}
+\bibcite{liu2021esc}{1}
+\@writefile{lot}{\contentsline {table}{\numberline {XI}{\ignorespaces Qualitative Comparison. $S_a$ = affective score; $S_d$ = decision score; ADI via Eq.~\eqref  {eq:adi}.}}{12}{}\protected@file@percent }
+\newlabel{tab:case_study}{{XI}{12}{}{table.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VIII-D}}Limitations and Future Work}{12}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VIII-E}}Supplementary Documentation and Release Checklist}{12}{}\protected@file@percent }
+\newlabel{sec:supplementary_checklist}{{\mbox  {VIII-E}}{12}{}{subsection.8.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {IX}Conclusion}{12}{}\protected@file@percent }
+\newlabel{sec:conclusion}{{IX}{12}{}{section.9}{}}
+\@writefile{toc}{\contentsline {section}{Appendix\nobreakspace  A: Supplementary TAD-Bench Materials}{12}{}\protected@file@percent }
+\bibcite{zhou2018ecm}{2}
+\bibcite{poria2019meld}{3}
+\bibcite{rashkin2019empathetic}{4}
+\bibcite{wu2022priority}{5}
+\bibcite{shen2022empathy}{6}
+\bibcite{kim2023angle}{7}
+\bibcite{kim2021moel}{8}
+\bibcite{majumder2020mime}{9}
+\bibcite{li2020empdg}{10}
+\bibcite{li2022kemp}{11}
+\bibcite{sabour2022cem}{12}
+\bibcite{ma2023glhg}{13}
+\bibcite{busso2008iemocap}{14}
+\bibcite{cheng2022fado}{15}
+\bibcite{li2016rl}{16}
+\bibcite{ouyang2022instructgpt}{17}
+\bibcite{schulman2017ppo}{18}
+\bibcite{caruana1997multitask}{19}
+\bibcite{liu2019mtdnn}{20}
+\bibcite{bender2021parrots}{21}
+\bibcite{hendrycks2021values}{22}
+\bibcite{lewis2020bart}{23}
+\bibcite{guo2017calibration}{24}
+\bibcite{vaswani2017attention}{25}
+\bibcite{papineni2002bleu}{26}
+\bibcite{lin2004rouge}{27}
+\bibcite{loshchilov2019adamw}{28}
+\@writefile{toc}{\contentsline {section}{References}{13}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{Biographies}{13}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{John Kingsley Arthur}{13}{}\protected@file@percent }
+\gdef \@abspage@last{13}

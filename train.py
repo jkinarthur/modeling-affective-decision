@@ -87,7 +87,7 @@ def parse_args() -> argparse.Namespace:
 
     # RL hyper-parameters
     p.add_argument("--rl_epochs",     type=int, default=3)
-    p.add_argument("--rl_lr",         type=float, default=1e-5)
+    p.add_argument("--rl_lr",         type=float, default=5e-6)
     p.add_argument("--rl_batch_size", type=int, default=8,
                    help="Batch size for RL rollouts (smaller to fit T4 memory)")
     p.add_argument("--rl_max_new_tokens", type=int, default=64,
@@ -98,15 +98,15 @@ def parse_args() -> argparse.Namespace:
                    help="Reward bonus coefficient to discourage score-collapse")
     p.add_argument("--reward_alpha", type=float, default=0.35,
                    help="Reward weight for S_aff term")
-    p.add_argument("--reward_beta", type=float, default=0.45,
-                   help="Penalty weight for S_dec term")
-    p.add_argument("--reward_gamma_adi", type=float, default=0.20,
-                   help="Reward weight for ADI=max(0,S_aff-S_dec) term")
-    p.add_argument("--reward_adir_tau_bonus", type=float, default=0.30,
-                   help="Bonus weight for crossing ADIR threshold tau")
-    p.add_argument("--reward_tau_sharpness", type=float, default=12.0,
+    p.add_argument("--reward_beta", type=float, default=0.85,
+                   help="Reward weight for S_dec term")
+    p.add_argument("--reward_gamma_adi", type=float, default=0.80,
+                   help="Penalty weight for ADI=max(0,S_aff-S_dec) term")
+    p.add_argument("--reward_adir_tau_bonus", type=float, default=0.80,
+                   help="Penalty weight for crossing ADIR threshold tau")
+    p.add_argument("--reward_tau_sharpness", type=float, default=16.0,
                    help="Sharpness of smooth ADIR threshold indicator")
-    p.add_argument("--reward_direct_alpha", type=float, default=1.0,
+    p.add_argument("--reward_direct_alpha", type=float, default=1.5,
                    help="Weight for eval-aligned reward on original dataset response")
     p.add_argument("--sft_ckpt",      type=str, default=None,
                    help="Path to SFT model checkpoint for RL init")
